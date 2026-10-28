@@ -59,12 +59,12 @@ async def message_url_handler(client: Client, message: Message):
     if not clean_urls:
         return
 
-    # Check maximum allowed URLs per message (max 10)
-    if len(clean_urls) > 10:
+    # Check maximum allowed URLs per message (based on MAX_USER_TASKS)
+    if len(clean_urls) > MAX_USER_TASKS:
         await message.reply_text(
-            f"⚠️ You sent {len(clean_urls)} links. Only the first 10 will be processed."
+            f"⚠️ You sent {len(clean_urls)} links. Only the first {MAX_USER_TASKS} will be processed."
         )
-        clean_urls = clean_urls[:10]
+        clean_urls = clean_urls[:MAX_USER_TASKS]
 
     # Check user active + queued limit
     current_active = queue_manager.get_user_active_count(user_id)
