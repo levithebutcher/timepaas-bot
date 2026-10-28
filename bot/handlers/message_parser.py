@@ -30,17 +30,9 @@ logger = logging.getLogger(__name__)
 URL_REGEX = re.compile(r"(https?://[^\s<>\"']+|www\.[^\s<>\"']+)", re.IGNORECASE)
 
 
-@Client.on_message(filters.text & filters.private & ~filters.command(["start", "help", "status", "cancelall", "setthumb", "clearthumb", "setcaption"]))
-async def message_url_handler(client: Client, message: Message):
+async def process_submitted_urls(client: Client, message: Message, target_text: str, is_album: bool = False):
+    """Processes URL extraction, queue limit checking, and enqueuing tasks."""
     user_id = message.from_user.id
-    if not is_authorized(user_id):
-        await message.reply_text("⛔ **Access Denied.** You are not authorized to use this bot.")
-        return
-
-    # Extract text from current message or replied message
-    target_text = message.text
-    if message.reply_to_message and message.reply_to_message.text:
-        target_text += "\n" + message.reply_to_message.text
 
     # Find all valid URLs
     raw_urls = URL_REGEX.findall(target_text)
@@ -89,22 +81,24 @@ async def message_url_handler(client: Client, message: Message):
         batch_id=batch_id,
         chat_id=message.chat.id,
         user_id=user_id,
-        total_count=len(clean_urls)
+        total_count=len(clean_urls),
+        is_album=is_album
     )
 
+    mode_label = " (Album Mode 🎬)" if is_album else ""
     ack_msg = await message.reply_text(
-        f"📥 **Accepted {len(clean_urls)} link(s)!**\nInitializing tasks in queue..."
+        f"📥 **Accepted {len(clean_urls)} link(s){mode_label}!**\nInitializing tasks in queue..."
     )
 
     for url in clean_urls:
         task_id = str(uuid.uuid4())
-        
+
         reply_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("✖ Cancel Task", callback_data=f"cancel:{task_id}")]
         ])
 
         status_msg = await message.reply_text(
-            f"⏳ **Task Queued:** `{task_id[:8]}`\n"
+            f"⏳ **Task Queued:** `{task_id[:8]}`{mode_label}\n"
             f"🔗 `{url[:50]}...`\n"
             f"State: Waiting for worker slot...",
             reply_markup=reply_markup
@@ -125,3 +119,43 @@ async def message_url_handler(client: Client, message: Message):
         await ack_msg.delete()
     except Exception:
         pass
+
+
+@Client.on_message(filters.command("album") & filters.private)
+async def album_command_handler(client: Client, message: Message):
+    user_id = message.from_user.id
+    if not is_authorized(user_id):
+        await message.reply_text("⛔ **Access Denied.** You are not authorized to use this bot.")
+        return
+
+    target_text = message.text or ""
+    if message.reply_to_message and message.reply_to_message.text:
+        target_text += "\n" + message.reply_to_message.text
+
+    raw_urls = URL_REGEX.findall(target_text)
+    if not raw_urls:
+        await message.reply_text(
+            "ℹ️ **Album Mode Usage:**\n\n"
+            "Send video links along with the command:\n"
+            "`/album <url1> <url2> ...`\n\n"
+            "Or reply to a message containing links with `/album`.\n\n"
+            "All downloaded videos will be uploaded together in an interactive Video Album (up to 10 videos per album)!"
+        )
+        return
+
+    await process_submitted_urls(client, message, target_text, is_album=True)
+
+
+@Client.on_message(filters.text & filters.private & ~filters.command(["start", "help", "status", "cancelall", "setthumb", "clearthumb", "setcaption", "album"]))
+async def message_url_handler(client: Client, message: Message):
+    user_id = message.from_user.id
+    if not is_authorized(user_id):
+        await message.reply_text("⛔ **Access Denied.** You are not authorized to use this bot.")
+        return
+
+    # Extract text from current message or replied message
+    target_text = message.text or ""
+    if message.reply_to_message and message.reply_to_message.text:
+        target_text += "\n" + message.reply_to_message.text
+
+    await process_submitted_urls(client, message, target_text, is_album=False)

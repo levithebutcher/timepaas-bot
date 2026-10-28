@@ -1,4 +1,5 @@
 import time
+import shutil
 import asyncio
 import logging
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ from bot.core.progress import update_status_message
 from bot.core.downloader import download_direct_stream, download_m3u8_stream, derive_filename
 from bot.core.splitter import split_video_file
 from bot.core.archive_manager import is_archive_file, extract_archive
-from bot.core.uploader import upload_file, upload_photo_albums
+from bot.core.uploader import upload_file, upload_photo_albums, upload_video_albums
 from bot.extractors.manager import extract_media_link
 from bot.database import get_user_settings
 
@@ -48,11 +49,13 @@ class BatchInfo:
     chat_id: int
     user_id: int
     total_count: int
+    is_album: bool = False
     task_ids: list[str] = field(default_factory=list)
     done_count: int = 0
     failed_count: int = 0
     cancelled_count: int = 0
     failed_urls: list[tuple[str, str]] = field(default_factory=list)
+    album_ready_items: list[tuple[Path, str, int]] = field(default_factory=list)
 
 
 class QueueManager:
@@ -68,12 +71,13 @@ class QueueManager:
     def get_user_active_count(self, user_id: int) -> int:
         return self._user_task_counts.get(user_id, 0)
 
-    def register_batch(self, batch_id: str, chat_id: int, user_id: int, total_count: int):
+    def register_batch(self, batch_id: str, chat_id: int, user_id: int, total_count: int, is_album: bool = False):
         self.batches[batch_id] = BatchInfo(
             batch_id=batch_id,
             chat_id=chat_id,
             user_id=user_id,
-            total_count=total_count
+            total_count=total_count,
+            is_album=is_album
         )
 
     async def enqueue_task(self, task: DownloadTask):
@@ -322,6 +326,29 @@ class QueueManager:
                 )
                 parts_to_upload = await split_video_file(downloaded_file, MAX_SPLIT_SIZE_BYTES)
 
+            batch = self.batches.get(task.batch_id)
+            if batch and batch.is_album:
+                task.status = "Ready for Album"
+                caption = user_settings.get("custom_caption") or f"🎬 `{downloaded_file.name}`"
+                album_dir = DOWNLOAD_DIR / f"album_{batch.batch_id}"
+                album_dir.mkdir(parents=True, exist_ok=True)
+                for part in parts_to_upload:
+                    dest_path = album_dir / part.name
+                    if dest_path.exists():
+                        dest_path = album_dir / f"{task.id[:6]}_{part.name}"
+                    shutil.move(str(part), str(dest_path))
+                    batch.album_ready_items.append((dest_path, caption, task.status_msg_id))
+                await update_status_message(
+                    client=client,
+                    chat_id=task.chat_id,
+                    message_id=task.status_msg_id,
+                    task_id=task.id,
+                    action="⏳ Downloaded! Waiting for other album videos...",
+                    force=True
+                )
+                await self._handle_task_completion(client, task, "Done")
+                return
+
             # Step 5: Uploading
             task.status = "Uploading"
             for part in parts_to_upload:
@@ -377,13 +404,16 @@ class QueueManager:
         curr = self._user_task_counts.get(task.user_id, 1)
         self._user_task_counts[task.user_id] = max(0, curr - 1)
 
+        batch = self.batches.get(task.batch_id)
+
         # Update individual task status message: Delete upon success so chat stays clean
         try:
             if outcome == "Done":
-                await client.delete_messages(
-                    chat_id=task.chat_id,
-                    message_ids=task.status_msg_id
-                )
+                if not (batch and batch.is_album):
+                    await client.delete_messages(
+                        chat_id=task.chat_id,
+                        message_ids=task.status_msg_id
+                    )
             elif outcome == "Cancelled":
                 await client.edit_message_text(
                     chat_id=task.chat_id,
@@ -400,7 +430,6 @@ class QueueManager:
             logger.debug(f"Could not update final task status for {task.id}: {e}")
 
         # Batch progress check
-        batch = self.batches.get(task.batch_id)
         if not batch:
             return
 
@@ -415,6 +444,29 @@ class QueueManager:
         # Check if entire batch is complete
         total_processed = batch.done_count + batch.failed_count + batch.cancelled_count
         if total_processed >= batch.total_count:
+            if batch.is_album and batch.album_ready_items:
+                user_settings = get_user_settings(batch.user_id)
+                album_videos = [(item[0], item[1]) for item in batch.album_ready_items]
+                try:
+                    await upload_video_albums(
+                        client=client,
+                        chat_id=batch.chat_id,
+                        video_items=album_videos,
+                        custom_thumb=user_settings.get("custom_thumb")
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to upload album batch {batch.batch_id}: {e}")
+                finally:
+                    # Clean up album status messages and folder
+                    for _, _, s_id in batch.album_ready_items:
+                        try:
+                            await client.delete_messages(chat_id=batch.chat_id, message_ids=s_id)
+                        except Exception:
+                            pass
+                    album_dir = DOWNLOAD_DIR / f"album_{batch.batch_id}"
+                    remove_path(album_dir)
+                    batch.album_ready_items.clear()
+
             await self._send_batch_summary(client, batch)
 
     async def _send_batch_summary(self, client, batch: BatchInfo):

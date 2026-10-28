@@ -85,6 +85,21 @@ class TestComponents(unittest.TestCase):
         self.assertEqual(clean.get("User-Agent"), "TestAgentInjected")
         self.assertEqual(clean.get("Referer"), "https://example.com/")
 
+    def test_album_batch_registration(self):
+        from bot.core.queue_manager import QueueManager
+        qm = QueueManager()
+        qm.register_batch("batch_123", 111, 222, 5, is_album=True)
+        batch = qm.batches["batch_123"]
+        self.assertTrue(batch.is_album)
+        self.assertEqual(batch.total_count, 5)
+
+    def test_input_media_video_stub(self):
+        from bot.core.uploader import InputMediaVideo
+        imv = InputMediaVideo(media="video.mp4", duration=10, width=1280, height=720)
+        self.assertEqual(imv.media, "video.mp4")
+        self.assertEqual(imv.duration, 10)
+        self.assertTrue(imv.supports_streaming)
+
 
 if __name__ == "__main__":
     unittest.main()

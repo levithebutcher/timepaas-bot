@@ -60,7 +60,8 @@ async def help_handler(client: Client, message: Message):
 
     text = (
         "📖 **Commands & Usage Guide:**\n\n"
-        "• **Send Links:** Paste 1 to 10 URLs (one per line) or reply to a message containing links.\n"
+        "• **Direct Links:** Paste URLs (one per line) or reply to links for individual video uploads.\n"
+        "• `/album <urls>` - Download and group multiple videos into a Telegram **Video Album** (up to 10 videos per album).\n"
         "• `/status` - Check currently active and queued tasks.\n"
         "• `/cancelall` - Cancel all your pending and active downloads.\n"
         "• `/setthumb` - Reply to an image to set your custom video thumbnail.\n"
