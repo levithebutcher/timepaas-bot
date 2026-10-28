@@ -1,7 +1,9 @@
+import re
 import time
 import shutil
 import asyncio
 import logging
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 try:
@@ -212,6 +214,13 @@ class QueueManager:
             stream_url = media_info["url"]
             stream_type = media_info.get("type", "direct")
             title = media_info.get("title") or derive_filename(stream_url)
+            # If title is generic (e.g. master.mp4), derive unique name from task.url slug
+            if title.lower() in ("master.mp4", "extracted_media.mp4", "download.mp4", "video.mp4", "browser_media.mp4", "stream_video.mp4", "playlist.m3u8"):
+                url_slug = [p for p in urlparse(task.url).path.split("/") if p and p not in ("v", "e", "d", "f", "watch", "file")]
+                if url_slug:
+                    clean_slug = re.sub(r"[^\w\s\.\-]", "", url_slug[-1]).strip()
+                    if clean_slug:
+                        title = f"{clean_slug}.mp4"
             headers = media_info.get("headers", {})
 
             # Step 2: Download

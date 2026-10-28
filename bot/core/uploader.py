@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import uuid
 import asyncio
 import logging
 from pathlib import Path
@@ -34,6 +35,9 @@ from bot.config import TEMP_DIR
 from bot.core.cleaner import remove_path
 
 logger = logging.getLogger(__name__)
+
+# Concurrency semaphore to avoid overloading Telegram MTProto DC5 media socket with too many simultaneous uploads
+_UPLOAD_SEMAPHORE = asyncio.Semaphore(2)
 
 
 async def get_video_metadata(file_path: Path) -> tuple[int, int, int, bool]:
@@ -180,53 +184,59 @@ async def upload_file(
     """
     Uploads a file to Telegram.
     Tries send_video with metadata and thumbnail first; falls back to send_document.
+    Uses unique thumbnail names per task and verifies file existence to prevent concurrency race conditions.
     """
-    thumb_to_use = None
-    generated_thumb = None
+    async with _UPLOAD_SEMAPHORE:
+        thumb_to_use = None
+        generated_thumb = None
 
-    if custom_thumb and Path(custom_thumb).exists():
-        thumb_to_use = custom_thumb
+        if custom_thumb and Path(custom_thumb).exists():
+            thumb_to_use = custom_thumb
 
-    try:
-        if not as_document and file_path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
-            duration, width, height, has_audio = await get_video_metadata(file_path)
-            if not has_audio:
-                file_path = await ensure_video_has_audio(file_path)
+        try:
+            if not as_document and file_path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
                 duration, width, height, has_audio = await get_video_metadata(file_path)
+                if not has_audio:
+                    file_path = await ensure_video_has_audio(file_path)
+                    duration, width, height, has_audio = await get_video_metadata(file_path)
 
-            if not thumb_to_use:
-                generated_thumb = TEMP_DIR / f"thumb_{file_path.stem}.jpg"
-                thumb_to_use = await generate_thumbnail(file_path, generated_thumb, duration)
+                if not thumb_to_use:
+                    # Isolated unique thumbnail per task/file to prevent race condition across workers
+                    generated_thumb = file_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{file_path.stem}.jpg"
+                    thumb_to_use = await generate_thumbnail(file_path, generated_thumb, duration)
 
-            try:
-                sent = await client.send_video(
-                    chat_id=chat_id,
-                    video=str(file_path),
-                    caption=caption,
-                    duration=duration,
-                    width=width,
-                    height=height,
-                    thumb=str(thumb_to_use) if thumb_to_use else None,
-                    supports_streaming=True,
-                    progress=progress_callback
-                )
-                return sent
-            except Exception as e:
-                logger.warning(f"send_video failed ({e}); falling back to send_document for {file_path.name}")
+                actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
 
-        # Fallback to document upload
-        sent = await client.send_document(
-            chat_id=chat_id,
-            document=str(file_path),
-            caption=caption,
-            thumb=str(thumb_to_use) if thumb_to_use else None,
-            progress=progress_callback
-        )
-        return sent
+                try:
+                    sent = await client.send_video(
+                        chat_id=chat_id,
+                        video=str(file_path),
+                        caption=caption,
+                        duration=duration,
+                        width=width,
+                        height=height,
+                        thumb=actual_thumb,
+                        supports_streaming=True,
+                        progress=progress_callback
+                    )
+                    return sent
+                except Exception as e:
+                    logger.warning(f"send_video failed ({e}); falling back to send_document for {file_path.name}")
 
-    finally:
-        if generated_thumb and generated_thumb.exists():
-            remove_path(generated_thumb)
+            # Fallback to document upload
+            actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
+            sent = await client.send_document(
+                chat_id=chat_id,
+                document=str(file_path),
+                caption=caption,
+                thumb=actual_thumb,
+                progress=progress_callback
+            )
+            return sent
+
+        finally:
+            if generated_thumb and generated_thumb.exists():
+                remove_path(generated_thumb)
 
 
 async def upload_video_albums(
@@ -245,7 +255,6 @@ async def upload_video_albums(
         await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
         return
 
-    # Keep chunk size small (max 3 videos) because Telegram MTProto socket drops on heavy video albums
     chunk_size = 3
     for i in range(0, len(video_items), chunk_size):
         chunk = video_items[i:i + chunk_size]
@@ -265,15 +274,16 @@ async def upload_video_albums(
 
             thumb_to_use = custom_thumb if custom_thumb and Path(custom_thumb).exists() else None
             if not thumb_to_use:
-                gen_thumb = TEMP_DIR / f"thumb_{v_path.stem}.jpg"
+                gen_thumb = v_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{v_path.stem}.jpg"
                 thumb_to_use = await generate_thumbnail(v_path, gen_thumb, duration)
                 if thumb_to_use:
                     temp_thumbs.append(thumb_to_use)
 
+            actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
             media_group.append(
                 InputMediaVideo(
                     media=str(v_path),
-                    thumb=str(thumb_to_use) if thumb_to_use else None,
+                    thumb=actual_thumb,
                     caption=caption,
                     duration=duration,
                     width=width,
@@ -282,23 +292,24 @@ async def upload_video_albums(
                 )
             )
 
-        try:
-            # Enforce 90-second timeout so Pyrogram doesn't hang in infinite socket retry loop
-            await asyncio.wait_for(
-                client.send_media_group(chat_id=chat_id, media=media_group),
-                timeout=90.0
-            )
-            await asyncio.sleep(2.0)
-        except Exception as e:
-            logger.warning(f"send_media_group failed or timed out ({e}), falling back to individual uploads")
-            for v_path, caption in chunk:
-                try:
-                    await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
-                except Exception as ex:
-                    logger.error(f"Fallback single upload failed for {v_path.name}: {ex}")
-        finally:
-            for t in temp_thumbs:
-                remove_path(t)
+        async with _UPLOAD_SEMAPHORE:
+            try:
+                # Enforce 90-second timeout so Pyrogram doesn't hang in infinite socket retry loop
+                await asyncio.wait_for(
+                    client.send_media_group(chat_id=chat_id, media=media_group),
+                    timeout=90.0
+                )
+                await asyncio.sleep(2.0)
+            except Exception as e:
+                logger.warning(f"send_media_group failed or timed out ({e}), falling back to individual uploads")
+                for v_path, caption in chunk:
+                    try:
+                        await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
+                    except Exception as ex:
+                        logger.error(f"Fallback single upload failed for {v_path.name}: {ex}")
+            finally:
+                for t in temp_thumbs:
+                    remove_path(t)
 
 
 async def upload_photo_albums(client, chat_id: int, image_paths: list[Path]):

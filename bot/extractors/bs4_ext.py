@@ -72,25 +72,91 @@ async def extract_with_bs4(url: str) -> dict:
                         "headers": headers
                     }
 
-        # 3. Search in <a href> with 'download' text or attribute
+        # 3. Search in <a href> and <form> with 'download' text or attribute and sniff redirects
+        download_candidates = []
         for a in soup.find_all("a", href=True):
             text = a.get_text().strip().lower()
             href = a.get("href", "").strip()
-            if "download" in text or a.get("download") is not None:
-                full_url = urljoin(url, href)
-                clean_path = urlparse(full_url).path.lower()
-                is_page_route = any(p in clean_path for p in ("/v/", "/e/", "/watch/", "/embed/", "/view/", "/play/", "/file/", "/f/", "/d/"))
-                if is_page_route or full_url == url:
-                    continue
+            if not href or href.startswith(("#", "javascript:", "mailto:")):
+                continue
 
-                for ext in TARGET_EXTENSIONS:
-                    if clean_path.endswith(ext):
-                        return {
-                            "type": "direct",
-                            "url": full_url,
-                            "title": full_url.split("/")[-1].split("?")[0] or "downloaded_file",
-                            "headers": headers
-                        }
+            full_url = urljoin(url, href)
+            clean_path = urlparse(full_url).path.lower()
+            is_page_route = any(p in clean_path for p in ("/v/", "/e/", "/watch/", "/embed/", "/view/", "/play/", "/file/", "/f/", "/d/"))
+            if is_page_route or full_url == url:
+                continue
+
+            # Check direct extension
+            for ext in TARGET_EXTENSIONS:
+                if clean_path.endswith(ext):
+                    return {
+                        "type": "direct",
+                        "url": full_url,
+                        "title": full_url.split("/")[-1].split("?")[0] or "downloaded_file",
+                        "headers": headers
+                    }
+
+            class_or_id = " ".join((a.get("class") or []) + [a.get("id") or ""]).lower()
+            is_dl = (
+                a.get("download") is not None
+                or any(kw in text for kw in ("download", "direct download", "get file", "download file", "fast download"))
+                or any(kw in class_or_id for kw in ("btn-download", "download-btn", "dlink", "downloadbtn"))
+            )
+            if is_dl:
+                download_candidates.append(("GET", full_url, None))
+
+        # Also inspect <form> elements with download action or buttons
+        for form in soup.find_all("form"):
+            form_text = form.get_text().strip().lower()
+            form_action = form.get("action", "").strip()
+            if any(kw in form_text or kw in form_action.lower() for kw in ("download", "get file")):
+                target_url = urljoin(url, form_action) if form_action else url
+                method = form.get("method", "POST").upper()
+                form_data = {}
+                for inp in form.find_all("input"):
+                    name = inp.get("name")
+                    if name:
+                        form_data[name] = inp.get("value", "")
+                download_candidates.append((method, target_url, form_data))
+
+        # Sniff top candidate download buttons (max 3) with fast HTTP request to follow redirects
+        for method, cand_url, data in download_candidates[:3]:
+            try:
+                cand_timeout = aiohttp.ClientTimeout(total=8)
+                req_kwargs = {"headers": headers, "allow_redirects": True, "timeout": cand_timeout}
+                req_coro = session.post(cand_url, data=data, **req_kwargs) if method == "POST" else session.get(cand_url, **req_kwargs)
+                async with req_coro as cand_resp:
+                    if cand_resp.status in (200, 206):
+                        c_disp = cand_resp.headers.get("Content-Disposition", "")
+                        c_type = cand_resp.headers.get("Content-Type", "").lower()
+                        c_len = cand_resp.headers.get("Content-Length")
+                        final_url = str(cand_resp.url)
+                        clean_final_path = urlparse(final_url).path.lower()
+
+                        is_media = (
+                            any(clean_final_path.endswith(ext) for ext in TARGET_EXTENSIONS)
+                            or "attachment" in c_disp.lower()
+                            or "video/" in c_type
+                            or ("application/octet-stream" in c_type and c_len and int(c_len) > 500 * 1024)
+                        )
+                        if is_media:
+                            cand_title = None
+                            if "filename=" in c_disp:
+                                fn_match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';\r\n]+)', c_disp)
+                                if fn_match:
+                                    cand_title = fn_match.group(1).strip()
+                            if not cand_title:
+                                cand_title = final_url.split("/")[-1].split("?")[0] or "downloaded_file.mp4"
+
+                            logger.info(f"BS4 download button successfully sniffed direct stream: {cand_title}")
+                            return {
+                                "type": "m3u8" if ".m3u8" in clean_final_path else "direct",
+                                "url": final_url,
+                                "title": cand_title,
+                                "headers": headers
+                            }
+            except Exception as ex:
+                logger.debug(f"Candidate check failed for {cand_url}: {ex}")
 
         # 4. Search for Dean Edwards packed JS or inline .m3u8/.mp4 stream URLs
         unpacked_or_html = html
