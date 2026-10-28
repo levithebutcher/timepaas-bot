@@ -37,7 +37,7 @@ from bot.core.cleaner import remove_path
 logger = logging.getLogger(__name__)
 
 # Concurrency semaphore to avoid overloading Telegram MTProto DC5 media socket with too many simultaneous uploads
-_UPLOAD_SEMAPHORE = asyncio.Semaphore(2)
+_UPLOAD_SEMAPHORE = asyncio.Semaphore(1)
 
 
 async def get_video_metadata(file_path: Path) -> tuple[int, int, int, bool]:

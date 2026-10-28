@@ -53,7 +53,12 @@ def _ytdlp_extract_sync(url: str) -> dict:
                     "headers": headers
                 }
     except Exception as e:
-        logger.debug(f"yt-dlp extraction failed for {url}: {e}")
+        err_msg = str(e)
+        logger.debug(f"yt-dlp extraction failed for {url}: {err_msg}")
+        if "404" in err_msg or "not found" in err_msg.lower():
+            return {"error": "File deleted / Not Found on host (HTTP 404)"}
+        if "522" in err_msg or "521" in err_msg or "523" in err_msg:
+            return {"error": "Host server is down / connection timed out (HTTP 522)"}
 
     return None
 

@@ -44,6 +44,11 @@ STREAMFILES_DOMAINS = {
     "streamfiles.net", "streamfile.net", "streamfiles.org", "streamfiles.site"
 }
 
+VIDARA_DOMAINS = {
+    "vidara.to", "vidara.so", "vidara.net", "vidara.org",
+    "gasobni.com"
+}
+
 
 def unpack_dean_edwards(payload: str) -> str:
     """
@@ -457,6 +462,55 @@ async def resolve_streamfiles(url: str) -> dict:
     return None
 
 
+async def resolve_vidara(url: str) -> dict:
+    """
+    Tier-0 Fast Resolver for Vidara.to / Gasobni video streams.
+    Directly queries the internal /api/stream endpoint in ~0.05s, completely bypassing headless browser.
+    """
+    try:
+        parsed = urlparse(url)
+        segments = [s for s in parsed.path.split("/") if s]
+        filecode = segments[-1] if segments else ""
+        if "." in filecode:
+            filecode = filecode.rsplit(".", 1)[0]
+
+        if not filecode:
+            return None
+
+        api_url = "https://gasobni.com/api/stream"
+        payload = {"filecode": filecode}
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Origin": "https://gasobni.com",
+            "Referer": f"https://gasobni.com/e/{filecode}",
+            "Content-Type": "application/json"
+        }
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8.0)) as session:
+            async with session.post(api_url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    streaming_url = data.get("streaming_url")
+                    title = data.get("title") or f"{filecode}.mp4"
+                    if not title.lower().endswith((".mp4", ".mkv")):
+                        title += ".mp4"
+
+                    if streaming_url:
+                        logger.info(f"Vidara stream resolved via direct API: {title}")
+                        return {
+                            "type": "m3u8" if ".m3u8" in streaming_url else "direct",
+                            "url": streaming_url,
+                            "title": title,
+                            "headers": {
+                                "User-Agent": DEFAULT_USER_AGENT,
+                                "Referer": "https://gasobni.com/"
+                            }
+                        }
+    except Exception as e:
+        logger.debug(f"Vidara fast extraction failed for {url}: {e}")
+    return None
+
+
 async def extract_from_video_hosts(url: str) -> dict:
     """
     Tier-0 Router: Checks if URL belongs to any specialized video hosting provider.
@@ -487,5 +541,9 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_matching_host(netloc, STREAMFILES_DOMAINS):
         logger.info(f"Target recognized as StreamFiles: {url}")
         return await resolve_streamfiles(url)
+
+    if is_matching_host(netloc, VIDARA_DOMAINS):
+        logger.info(f"Target recognized as Vidara/Gasobni: {url}")
+        return await resolve_vidara(url)
 
     return None

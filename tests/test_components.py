@@ -96,6 +96,13 @@ class TestComponents(unittest.TestCase):
         self.assertTrue(batch.is_album)
         self.assertEqual(batch.total_count, 5)
 
+    def test_vidara_domain_matching(self):
+        from bot.extractors.video_hosts import is_matching_host, VIDARA_DOMAINS
+        self.assertTrue(is_matching_host("vidara.to", VIDARA_DOMAINS))
+        self.assertTrue(is_matching_host("gasobni.com", VIDARA_DOMAINS))
+        self.assertTrue(is_matching_host("sub.vidara.so", VIDARA_DOMAINS))
+        self.assertFalse(is_matching_host("othersite.com", VIDARA_DOMAINS))
+
     def test_input_media_video_stub(self):
         from bot.core.uploader import InputMediaVideo
         imv = InputMediaVideo(media="video.mp4", duration=10, width=1280, height=720)

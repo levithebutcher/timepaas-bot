@@ -49,9 +49,13 @@ async def extract_media_link(url: str) -> dict:
     # 2. Try yt-dlp
     logger.info(f"[Tier 1] Attempting yt-dlp extraction for {url}")
     result = await extract_with_ytdlp(url)
-    if result and result.get("url"):
-        logger.info(f"[Tier 1] yt-dlp successfully resolved stream: {result.get('title')}")
-        return result
+    if result:
+        if result.get("url"):
+            logger.info(f"[Tier 1] yt-dlp successfully resolved stream: {result.get('title')}")
+            return result
+        elif result.get("error"):
+            logger.warning(f"Aborting downstream extractors for {url}: {result.get('error')}")
+            raise RuntimeError(result.get("error"))
 
     # 3. Try BeautifulSoup
     logger.info(f"[Tier 2] Falling back to BeautifulSoup4 for {url}")
