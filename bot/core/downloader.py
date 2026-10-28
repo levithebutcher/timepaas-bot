@@ -91,6 +91,20 @@ async def download_direct_stream(
                             if progress_callback:
                                 await progress_callback(downloaded, total_bytes)
 
+                    # Post-download validation: ensure file is not an HTML webpage
+                    if target_path.exists() and target_path.stat().st_size < 500 * 1024:
+                        try:
+                            with open(target_path, "rb") as check_f:
+                                prefix = check_f.read(512).lower()
+                                if b"<!doctype html" in prefix or b"<html" in prefix or b"<head" in prefix:
+                                    target_path.unlink(missing_ok=True)
+                                    raise RuntimeError(
+                                        "Downloaded content was an HTML webpage instead of a media stream. "
+                                        "The video link could not be downloaded."
+                                    )
+                        except (IOError, OSError):
+                            pass
+
                     return target_path
 
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:

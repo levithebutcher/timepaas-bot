@@ -44,22 +44,43 @@ def is_matching_host(netloc: str, domain_set: set[str]) -> bool:
     return False
 
 
+def evaluate_streamtape_js(expr: str) -> str:
+    """Evaluates Streamtape string concatenation and .substring() offsets."""
+    pattern = r"['\"]([^'\"]*)['\"](?:\s*\))?(?:\.substring\((\d+)(?:,\s*(\d+))?\))?"
+    result = []
+    for m in re.finditer(pattern, expr):
+        s = m.group(1)
+        sub1 = m.group(2)
+        sub2 = m.group(3)
+        if sub1 is not None:
+            start = int(sub1)
+            end = int(sub2) if sub2 is not None else None
+            s = s[start:end] if end is not None else s[start:]
+        result.append(s)
+    return "".join(result)
+
+
 async def resolve_streamtape(url: str) -> dict:
     """
     Extracts direct video URL from Streamtape.
-    Tries official API first if credentials exist, then falls back to direct HTML JS parsing.
+    Tries official API first if credentials exist, then falls back to direct HTML JS parsing,
+    and finally to Playwright headless sniffer.
     """
     parsed = urlparse(url)
-    clean_url = url
 
-    # Normalize /v/ (view) to /e/ (embed)
-    if "/v/" in parsed.path:
-        clean_url = url.replace("/v/", "/e/")
+    # Extract actual clean file_id from /v/ID/filename or /e/ID
+    parts = [p for p in parsed.path.split("/") if p and p not in ("v", "e")]
+    if not parts:
+        return None
+    file_id = parts[0]
+    
+    # Extract original filename if present (e.g. 02.mp4)
+    original_filename = parts[1] if len(parts) > 1 and "." in parts[1] else f"streamtape_{file_id}.mp4"
+    clean_embed_url = f"https://streamtape.com/e/{file_id}"
 
     # 1. Official API Mode (if credentials provided)
     if STREAMTAPE_LOGIN and STREAMTAPE_KEY:
         try:
-            file_id = parsed.path.strip("/").split("/")[1]
             api_ticket_url = f"https://api.strtape.tech/file/dlticket?file={file_id}&login={STREAMTAPE_LOGIN}&key={STREAMTAPE_KEY}"
             async with aiohttp.ClientSession() as session:
                 async with session.get(api_ticket_url) as resp:
@@ -79,73 +100,74 @@ async def resolve_streamtape(url: str) -> dict:
                                     return {
                                         "type": "direct",
                                         "url": direct_url,
-                                        "title": f"streamtape_{file_id}.mp4",
-                                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": "https://streamtape.com/"}
+                                        "title": original_filename,
+                                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"https://streamtape.com/v/{file_id}"}
                                     }
         except Exception as e:
-            logger.debug(f"Streamtape API extraction failed, falling back to scraper: {e}")
+            logger.debug(f"Streamtape API extraction failed: {e}")
 
-    # 2. Zero-Config Web Scraper Mode (No API key needed)
+    # 2. Zero-Config Web Scraper Mode (evaluates JS token)
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
-        "Referer": "https://streamtape.com/"
+        "Referer": f"https://streamtape.com/v/{file_id}"
     }
 
     try:
         timeout = aiohttp.ClientTimeout(total=20)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.get(clean_url, allow_redirects=True) as response:
-                if response.status != 200:
-                    return None
-                html = await response.text()
+            # Try embed URL first, then view URL
+            for target_url in [clean_embed_url, f"https://streamtape.com/v/{file_id}"]:
+                async with session.get(target_url, allow_redirects=True) as response:
+                    if response.status != 200:
+                        continue
+                    html = await response.text()
 
-        # Streamtape stores the video link in document.getElementById('robotlink').innerHTML = ...
-        # Or ideoolink, norobotlink
-        # Pattern 1: Assignment to robotlink or ideoolink
-        patterns = [
-            r"document\.getElementById\(['\"](?:robotlink|ideoolink|norobotlink)['\"]\)[\s\.]*innerHTML\s*=\s*['\"]([^'\"]+)['\"]",
-            r"getElementById\(['\"](?:robotlink|ideoolink)['\"]\)[\s\.]*inner(?:HTML)?\s*=\s*['\"]([^'\"]+)['\"]",
-            r"['\"]((?:https?:)?//[^\s'\"]+streamtape\.com/get_video\?[^'\"]+)['\"]",
-            r"['\"]((?:https?:)?//[^\s'\"]+/get_video\?[^'\"]+)['\"]"
-        ]
+                # Find script assignment targeting innerHTML
+                assign_match = re.search(
+                    r"document\.getElementById\(['\"](?:robotlink|ideoolink|norobotlink|cphdlk|linko)['\"]\)\.innerHTML\s*=\s*(.+?);",
+                    html
+                )
+                stream_url = None
+                if assign_match:
+                    expr = assign_match.group(1)
+                    evaluated = evaluate_streamtape_js(expr)
+                    if "/get_video" in evaluated:
+                        stream_url = evaluated
 
-        stream_url = None
-        for pattern in patterns:
-            match = re.search(pattern, html)
-            if match:
-                stream_url = match.group(1)
-                break
+                if not stream_url:
+                    # Generic pattern fallback
+                    match = re.search(r"['\"]((?:https?:)?//[^\s'\"]+streamtape\.com/get_video\?[^'\"]+)['\"]", html)
+                    if match:
+                        stream_url = match.group(1)
 
-        # Check for multi-part string concatenation (common in Streamtape obfuscation)
-        if not stream_url:
-            concat_match = re.search(r"getElementById\(['\"](?:robotlink|ideoolink)['\"]\)[\s\.]*inner(?:HTML)?\s*=\s*(.+?);", html)
-            if concat_match:
-                raw_expr = concat_match.group(1)
-                string_tokens = re.findall(r"['\"]([^'\"]+)['\"]", raw_expr)
-                if string_tokens:
-                    combined = "".join(string_tokens)
-                    if "/get_video" in combined:
-                        stream_url = combined
+                if stream_url:
+                    if stream_url.startswith("//"):
+                        stream_url = "https:" + stream_url
+                    elif not stream_url.startswith("http"):
+                        stream_url = "https://streamtape.com" + stream_url
 
-        if stream_url:
-            if stream_url.startswith("//"):
-                stream_url = "https:" + stream_url
-            elif not stream_url.startswith("http"):
-                stream_url = "https://streamtape.com" + stream_url
-
-            # Unescape characters
-            stream_url = stream_url.replace("\\/", "/").replace("&amp;", "&")
-
-            file_id = parsed.path.strip("/").split("/")[-1]
-            return {
-                "type": "direct",
-                "url": stream_url,
-                "title": f"streamtape_{file_id}.mp4",
-                "headers": headers
-            }
+                    stream_url = stream_url.replace("\\/", "/").replace("&amp;", "&")
+                    logger.info(f"Streamtape stream successfully extracted via scraper: {original_filename}")
+                    return {
+                        "type": "direct",
+                        "url": stream_url,
+                        "title": original_filename,
+                        "headers": headers
+                    }
 
     except Exception as e:
         logger.debug(f"Streamtape scraper failed for {url}: {e}")
+
+    # 3. Playwright Fallback if static scraping didn't yield token
+    try:
+        from bot.extractors.browser_ext import extract_with_playwright
+        logger.info(f"Triggering Playwright fallback for Streamtape {clean_embed_url}")
+        res = await extract_with_playwright(clean_embed_url)
+        if res and res.get("url"):
+            res["title"] = original_filename
+            return res
+    except Exception as e:
+        logger.debug(f"Playwright fallback failed for Streamtape: {e}")
 
     return None
 

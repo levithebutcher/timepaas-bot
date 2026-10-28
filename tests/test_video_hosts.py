@@ -6,6 +6,7 @@ import unittest
 import re
 from bot.extractors.video_hosts import (
     is_matching_host,
+    evaluate_streamtape_js,
     STREAMTAPE_DOMAINS,
     DOOD_DOMAINS,
     MIXDROP_DOMAINS,
@@ -79,6 +80,12 @@ class TestVideoHosts(unittest.TestCase):
         if combined.startswith("//"):
             combined = "https:" + combined
         self.assertEqual(combined, "https://streamtape.com/get_video?id=testfile&token=tok_987")
+
+
+    def test_evaluate_streamtape_js_function(self):
+        expr = "'//streamtape.com/get_video?id=9Bl9qkyZrMCarxy&token=' + ('junkprefix_token123').substring(11)"
+        result = evaluate_streamtape_js(expr)
+        self.assertEqual(result, "//streamtape.com/get_video?id=9Bl9qkyZrMCarxy&token=token123")
 
 
 if __name__ == "__main__":
