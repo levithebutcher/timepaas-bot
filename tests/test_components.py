@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from bot.core.progress import format_size, format_time, generate_bar
 from bot.core.archive_manager import is_archive_file
+from bot.core.downloader import parse_aria2_size, derive_filename
 from bot.handlers.message_parser import URL_REGEX
 
 
@@ -51,6 +52,20 @@ class TestComponents(unittest.TestCase):
         """
         urls = URL_REGEX.findall(raw_text)
         self.assertEqual(len(urls), 3)
+
+    def test_parse_aria2_size(self):
+        self.assertEqual(parse_aria2_size("1024B"), 1024)
+        self.assertEqual(parse_aria2_size("1KiB"), 1024)
+        self.assertEqual(parse_aria2_size("4.5MiB"), int(4.5 * 1024 * 1024))
+        self.assertEqual(parse_aria2_size("1.2GiB"), int(1.2 * 1024 * 1024 * 1024))
+        self.assertEqual(parse_aria2_size("invalid"), 0)
+
+    def test_derive_filename(self):
+        self.assertEqual(derive_filename("https://example.com/video.mp4"), "video.mp4")
+        self.assertEqual(
+            derive_filename("https://example.com/download", {"Content-Disposition": 'attachment; filename="clip.mkv"'}),
+            "clip.mkv"
+        )
 
 
 if __name__ == "__main__":
