@@ -34,13 +34,24 @@ def create_bot_client() -> Client:
     return app
 
 
-async def startup():
-    """Startup initialization routine."""
+async def run_app():
+    """Main async application loop."""
     logger.info("Initializing database...")
     await init_db()
 
     logger.info("Cleaning leftover temporary files...")
     clean_temp_directories()
+
+    # Create client while event loop is active
+    app = create_bot_client()
+
+    async with app:
+        logger.info("Bot started successfully on MTProto client.")
+        # Start background queue workers
+        await queue_manager.start_workers(app)
+        logger.info("All queue workers active and waiting for tasks.")
+        # Keep bot running
+        await asyncio.Event().wait()
 
 
 def main():
@@ -48,24 +59,19 @@ def main():
     logger.info("Starting Timepass Leech & Downloader Bot...")
     logger.info("==========================================")
 
-    # Run initial async setup
-    asyncio.run(startup())
-
-    app = create_bot_client()
-
-    async def run_bot():
-        async with app:
-            logger.info("Bot started successfully on MTProto client.")
-            # Start background queue workers
-            await queue_manager.start_workers(app)
-            logger.info("All queue workers active and waiting for tasks.")
-            # Keep bot running
-            await asyncio.Event().wait()
+    # Ensure an event loop is set for Python 3.10+ / 3.12+ / 3.13+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     try:
-        asyncio.run(run_bot())
+        loop.run_until_complete(run_app())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot shutdown requested. Goodbye!")
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
