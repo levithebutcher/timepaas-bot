@@ -13,6 +13,8 @@ from pathlib import Path
 FORBIDDEN_STRINGS = [
     "8544932366:AAGvtPGsNR3H3G3uu6t34pxH2APu6v8HUQI",
     "6646b1e76da41504f226eec967a46b82",
+    "39a12731ca8721fce71e",
+    "O2QlmwRLO4CZJv0",
 ]
 
 # Regex pattern for general Telegram bot tokens (e.g. 123456789:ABCdefGhIjk...)

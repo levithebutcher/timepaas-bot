@@ -86,25 +86,28 @@ async def resolve_streamtape(url: str) -> dict:
                 async with session.get(api_ticket_url) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        result = data.get("result", {})
+                        result = data.get("result") or {}
                         ticket = result.get("ticket")
-                        wait_time = result.get("wait_time", 5)
+                        wait_time = int(result.get("wait_time", 5))
                         if ticket:
-                            await asyncio.sleep(min(wait_time, 5))
+                            # Respect wait_time + 1s buffer for ticket activation
+                            await asyncio.sleep(wait_time + 1)
                             api_dl_url = f"https://api.strtape.tech/file/dl?file={file_id}&ticket={ticket}&login={STREAMTAPE_LOGIN}&key={STREAMTAPE_KEY}"
                             async with session.get(api_dl_url) as dl_resp:
                                 dl_data = await dl_resp.json()
-                                direct_url = dl_data.get("result", {}).get("url")
+                                res_obj = dl_data.get("result") or {}
+                                direct_url = res_obj.get("url")
+                                file_name = res_obj.get("name") or original_filename
                                 if direct_url:
-                                    logger.info("Streamtape stream resolved via official API.")
+                                    logger.info(f"Streamtape stream resolved via official API: {file_name}")
                                     return {
                                         "type": "direct",
                                         "url": direct_url,
-                                        "title": original_filename,
+                                        "title": file_name,
                                         "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"https://streamtape.com/v/{file_id}"}
                                     }
         except Exception as e:
-            logger.debug(f"Streamtape API extraction failed: {e}")
+            logger.warning(f"Streamtape API extraction error: {e}")
 
     # 2. Zero-Config Web Scraper across Streamtape domain mirrors
     mirrors = ["streamtape.com", "streamtape.to", "strtape.tech", "streamta.pe"]
