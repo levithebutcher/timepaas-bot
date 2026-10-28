@@ -47,6 +47,10 @@ DATABASE_PATH = ROOT_DIR / "bot_database.db"
 # 1.95 GiB size limit for Telegram Bot API uploads (safety buffer below 2000 MiB)
 MAX_SPLIT_SIZE_BYTES = int(1.95 * 1024 * 1024 * 1024)
 
+# Optional Streamtape API Credentials
+STREAMTAPE_LOGIN = os.getenv("STREAMTAPE_LOGIN")
+STREAMTAPE_KEY = os.getenv("STREAMTAPE_KEY")
+
 # Headers for browser spoofing
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

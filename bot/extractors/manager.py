@@ -1,5 +1,6 @@
 import logging
 from urllib.parse import urlparse
+from bot.extractors.video_hosts import extract_from_video_hosts
 from bot.extractors.ytdlp_ext import extract_with_ytdlp
 from bot.extractors.bs4_ext import extract_with_bs4
 from bot.extractors.browser_ext import extract_with_playwright
@@ -15,7 +16,8 @@ DIRECT_EXTENSIONS = {
 async def extract_media_link(url: str) -> dict:
     """
     Sequentially resolves target video/archive from a page URL:
-    1. Direct URL check
+    0. Direct file link check
+    1. Specialized Video Hosts (Streamtape, Doodstream, Mixdrop, Streamwish, FileLions)
     2. yt-dlp native extraction
     3. BeautifulSoup4 HTML tag search
     4. Playwright headless network sniffer
@@ -35,21 +37,28 @@ async def extract_media_link(url: str) -> dict:
                 "headers": {}
             }
 
-    # 1. Try yt-dlp
+    # 1. Specialized Video Hosts Resolver (Streamtape, Doodstream, Mixdrop, etc.)
+    logger.info(f"[Tier 0] Checking specialized video host extractors for {url}")
+    host_res = await extract_from_video_hosts(url)
+    if host_res and host_res.get("url"):
+        logger.info(f"[Tier 0] Video host resolver extracted stream: {host_res.get('title')}")
+        return host_res
+
+    # 2. Try yt-dlp
     logger.info(f"[Tier 1] Attempting yt-dlp extraction for {url}")
     result = await extract_with_ytdlp(url)
     if result and result.get("url"):
         logger.info(f"[Tier 1] yt-dlp successfully resolved stream: {result.get('title')}")
         return result
 
-    # 2. Try BeautifulSoup
+    # 3. Try BeautifulSoup
     logger.info(f"[Tier 2] Falling back to BeautifulSoup4 for {url}")
     result = await extract_with_bs4(url)
     if result and result.get("url"):
         logger.info(f"[Tier 2] BeautifulSoup4 extracted stream: {result.get('title')}")
         return result
 
-    # 3. Try Playwright
+    # 4. Try Playwright
     logger.info(f"[Tier 3] Falling back to Playwright headless browser for {url}")
     result = await extract_with_playwright(url)
     if result and result.get("url"):

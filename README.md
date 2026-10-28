@@ -11,10 +11,11 @@ Designed to run seamlessly on **Google Colab Free Tier**, **Linux/VPS**, and **W
 - **Multi-Link Ingestion:** Send up to 10 URLs in a single message (one per line) or reply to a message containing links.
 - **Smart Queue & Concurrency:** Concurrency controlled via `asyncio.Semaphore(MAX_CONCURRENT_TASKS)` (default: 3). Remaining tasks wait in queue and automatically start when a slot frees up.
 - **Sequential Link Extraction:**
-  1. `yt-dlp` (fastest & handles thousands of sites)
-  2. `BeautifulSoup4` (HTML `<video>`, `<source>`, and direct download anchors)
-  3. `Playwright` (headless Chromium network sniffer to intercept dynamic streaming URLs)
-  4. Automatic `ffmpeg` remuxing of `.m3u8` manifests into `.mp4` containers.
+  1. `Specialized Video Hosts` (Tier-0 direct resolver for **Streamtape**, **Doodstream**, **Mixdrop**, **Streamwish**, **FileLions** with zero-config scraping + optional API key support)
+  2. `yt-dlp` (fastest & handles thousands of sites)
+  3. `BeautifulSoup4` (HTML `<video>`, `<source>`, and direct download anchors)
+  4. `Playwright` (headless Chromium network sniffer to intercept dynamic streaming URLs)
+  5. Automatic `ffmpeg` remuxing of `.m3u8` manifests into `.mp4` containers.
 - **ZIP & Archive Support:** Automatically extracts `.zip`, `.rar`, and `.7z` archives. Uploads enclosed videos as video players and photos as grouped Telegram Media Albums (10 photos per album). If an archive contains **more than 50 images**, the bot presents interactive buttons asking whether you want:
   1. `🖼️ Images Only` (uploaded to chat in albums)
   2. `📦 ZIP File Only` (uploaded as raw document)
