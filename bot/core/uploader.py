@@ -13,16 +13,21 @@ from bot.core.cleaner import remove_path
 logger = logging.getLogger(__name__)
 
 
+import json
+
+
 async def get_video_metadata(file_path: Path) -> tuple[int, int, int]:
     """
     Returns (duration_seconds, width, height) using ffprobe.
+    Ensures duration is read from container format and streams so Telegram displays
+    a full video player with controls rather than an animation/GIF.
     """
     cmd = [
         "ffprobe",
         "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,duration",
-        "-of", "csv=s=x:p=0",
+        "-show_format",
+        "-show_streams",
+        "-of", "json",
         str(file_path)
     ]
     try:
@@ -33,29 +38,39 @@ async def get_video_metadata(file_path: Path) -> tuple[int, int, int]:
         )
         stdout, _ = await proc.communicate()
         if proc.returncode == 0:
-            out = stdout.decode().strip()
-            parts = out.split("x")
-            if len(parts) >= 2:
-                width = int(parts[0])
-                height = int(parts[1])
-                duration = 0
-                if len(parts) >= 3 and parts[2]:
-                    try:
-                        duration = int(float(parts[2]))
-                    except ValueError:
-                        pass
-                return duration, width, height
+            data = json.loads(stdout.decode())
+            fmt = data.get("format", {})
+            raw_dur = fmt.get("duration")
+            dur = float(raw_dur) if raw_dur else 0.0
+
+            width, height = 0, 0
+            for s in data.get("streams", []):
+                if s.get("codec_type") == "video":
+                    width = int(s.get("width") or 0)
+                    height = int(s.get("height") or 0)
+                    if dur <= 0 and s.get("duration"):
+                        try:
+                            dur = float(s["duration"])
+                        except (ValueError, TypeError):
+                            pass
+                    break
+
+            # If duration is 0, Telegram defaults to GIF animation. Ensure at least 1 second.
+            final_duration = max(1, int(round(dur)))
+            return final_duration, width, height
     except Exception as e:
         logger.debug(f"ffprobe metadata extraction failed for {file_path.name}: {e}")
-    return 0, 0, 0
+
+    return 1, 0, 0
 
 
-async def generate_thumbnail(file_path: Path, thumb_path: Path) -> Path:
-    """Extracts a frame at 00:00:05 as a JPG thumbnail."""
+async def generate_thumbnail(file_path: Path, thumb_path: Path, duration: int = 1) -> Path:
+    """Extracts a video frame as a JPG thumbnail (avoiding seeking past end of short videos)."""
+    seek_seconds = min(1, max(0, duration // 2))
     cmd = [
         "ffmpeg",
         "-y",
-        "-ss", "00:00:05",
+        "-ss", str(seek_seconds),
         "-i", str(file_path),
         "-vframes", "1",
         "-q:v", "2",
@@ -93,13 +108,14 @@ async def upload_file(
 
     if custom_thumb and Path(custom_thumb).exists():
         thumb_to_use = custom_thumb
-    elif not as_document and file_path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
-        generated_thumb = TEMP_DIR / f"thumb_{file_path.stem}.jpg"
-        thumb_to_use = await generate_thumbnail(file_path, generated_thumb)
 
     try:
         if not as_document and file_path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
             duration, width, height = await get_video_metadata(file_path)
+            if not thumb_to_use:
+                generated_thumb = TEMP_DIR / f"thumb_{file_path.stem}.jpg"
+                thumb_to_use = await generate_thumbnail(file_path, generated_thumb, duration)
+
             try:
                 sent = await client.send_video(
                     chat_id=chat_id,

@@ -377,13 +377,12 @@ class QueueManager:
         curr = self._user_task_counts.get(task.user_id, 1)
         self._user_task_counts[task.user_id] = max(0, curr - 1)
 
-        # Update individual task status message
+        # Update individual task status message: Delete upon success so chat stays clean
         try:
             if outcome == "Done":
-                await client.edit_message_text(
+                await client.delete_messages(
                     chat_id=task.chat_id,
-                    message_id=task.status_msg_id,
-                    text=f"✅ **Task Completed!**\n🔗 `{task.url}`\nUploaded successfully."
+                    message_ids=task.status_msg_id
                 )
             elif outcome == "Cancelled":
                 await client.edit_message_text(
@@ -419,8 +418,13 @@ class QueueManager:
             await self._send_batch_summary(client, batch)
 
     async def _send_batch_summary(self, client, batch: BatchInfo):
+        # If everything finished cleanly with no failures, keep chat clean (no summary spam)
+        if batch.failed_count == 0 and batch.cancelled_count == 0:
+            self.batches.pop(batch.batch_id, None)
+            return
+
         summary_lines = [
-            "🏁 **Batch Processing Completed!**",
+            "🏁 **Batch Processing Report:**",
             f"✅ **Finished:** {batch.done_count}",
             f"❌ **Failed:** {batch.failed_count}",
             f"🚫 **Cancelled:** {batch.cancelled_count}"
