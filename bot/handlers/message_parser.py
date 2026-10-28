@@ -97,10 +97,27 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
             [InlineKeyboardButton("✖ Cancel Task", callback_data=f"cancel:{task_id}")]
         ])
 
+        if is_album:
+            status_text = (
+                f"🎬 **VIDEO ALBUM QUEUE** ➔ `[{task_id[:8]}]`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔗 **Link:** `{url[:45]}...`\n"
+                f"🎞 **Target:** *Grouped Video Album (Mini-Batch)*\n"
+                f"⏳ **Status:** <i>Waiting for worker slot in queue...</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+        else:
+            status_text = (
+                f"⚡ **DIRECT LEECH** ➔ `[{task_id[:8]}]`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔗 **Link:** `{url[:45]}...`\n"
+                f"🔄 **Type:** *Individual Video Player*\n"
+                f"⏳ **Status:** <i>Waiting for worker slot in queue...</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+
         status_msg = await message.reply_text(
-            f"⏳ **Task Queued:** `{task_id[:8]}`{mode_label}\n"
-            f"🔗 `{url[:50]}...`\n"
-            f"State: Waiting for worker slot...",
+            status_text,
             reply_markup=reply_markup
         )
 

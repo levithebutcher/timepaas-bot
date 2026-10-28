@@ -44,14 +44,14 @@ def format_time(seconds: float) -> str:
 
 
 def generate_bar(current: int, total: int, length: int = 10) -> str:
-    """Generates visual progress bar like [■■■■□□□□□□] 40%."""
+    """Generates a modern visual progress bar like ▰▰▰▰▱▱▱▱▱▱ 40.0%."""
     if not total or total <= 0:
-        return "[----------] 0%"
+        return f"{'▱' * length} 0.0%"
     fraction = min(max(current / total, 0.0), 1.0)
     filled = int(fraction * length)
-    bar = "■" * filled + "□" * (length - filled)
+    bar = "▰" * filled + "▱" * (length - filled)
     percent = fraction * 100
-    return f"[{bar}] {percent:.1f}%"
+    return f"{bar} {percent:.1f}%"
 
 
 async def update_status_message(
@@ -64,10 +64,12 @@ async def update_status_message(
     total: int = 0,
     start_time: float = None,
     file_name: str = "",
-    force: bool = False
+    force: bool = False,
+    is_album: bool = False
 ):
     """
     Safely edits status message in chat, throttled to 5 seconds per task.
+    Displays modern, transparent progress layouts tailored for Normal or Album mode.
     Handles Telegram FloodWait exceptions seamlessly.
     """
     now = time.time()
@@ -78,12 +80,14 @@ async def update_status_message(
 
     _LAST_UPDATE_TIMES[task_id] = now
 
-    # Calculate speed & ETA
+    # Calculate speed, elapsed & ETA
     speed_str = "0 B/s"
     eta_str = "--:--"
+    elapsed_str = "--:--"
     if start_time and current > 0:
         elapsed = now - start_time
         if elapsed > 0:
+            elapsed_str = format_time(elapsed)
             speed = current / elapsed
             speed_str = f"{format_size(int(speed))}/s"
             if total > current and speed > 0:
@@ -95,15 +99,34 @@ async def update_status_message(
     total_str = format_size(total) if total > 0 else "Unknown"
 
     display_name = file_name if len(file_name) <= 35 else file_name[:32] + "..."
+    if not display_name:
+        display_name = "Media File"
 
-    text = (
-        f"⚡ **Task:** `{task_id[:8]}`\n"
-        f"📂 **File:** `{display_name}`\n"
-        f"🔄 **State:** {action}\n"
-        f"📊 **Progress:** `{bar}`\n"
-        f"💾 **Size:** `{curr_str}` / `{total_str}`\n"
-        f"🚀 **Speed:** `{speed_str}` | ⏳ **ETA:** `{eta_str}`"
-    )
+    if is_album:
+        text = (
+            f"🎬 **VIDEO ALBUM QUEUE** ➔ `[{task_id[:8]}]`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📂 **Item:** `{display_name}`\n"
+            f"📊 **Progress:** `{bar}`\n"
+            f"💾 **Size:** `{curr_str}` / `{total_str}`\n"
+            f"⚡ **Speed:** `{speed_str}`\n"
+            f"⏱ **ETA:** `{eta_str}` • **Elapsed:** `{elapsed_str}`\n"
+            f"🎞 **Album Stage:** {action}\n"
+            f"ℹ️ *Will be grouped and posted as a Video Album.*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+    else:
+        text = (
+            f"⚡ **DIRECT LEECH** ➔ `[{task_id[:8]}]`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📂 **File:** `{display_name}`\n"
+            f"📊 **Progress:** `{bar}`\n"
+            f"💾 **Size:** `{curr_str}` / `{total_str}`\n"
+            f"⚡ **Speed:** `{speed_str}`\n"
+            f"⏱ **ETA:** `{eta_str}` • **Elapsed:** `{elapsed_str}`\n"
+            f"🔄 **Status:** {action}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
 
     reply_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("✖ Cancel Task", callback_data=f"cancel:{task_id}")]

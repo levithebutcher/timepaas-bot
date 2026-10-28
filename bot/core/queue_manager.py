@@ -185,6 +185,8 @@ class QueueManager:
         task_dir.mkdir(parents=True, exist_ok=True)
         downloaded_file = None
         user_settings = await get_user_settings(task.user_id)
+        batch = self.batches.get(task.batch_id)
+        is_album_mode = bool(batch and batch.is_album)
 
         try:
             # Step 1: Extraction
@@ -194,7 +196,9 @@ class QueueManager:
                 chat_id=task.chat_id,
                 message_id=task.status_msg_id,
                 task_id=task.id,
-                action="🔍 Extracting video link...",
+                action="🔍 Resolving media stream...",
+                file_name=task.url.split("/")[-1] or "Media Stream",
+                is_album=is_album_mode,
                 force=True
             )
 
@@ -218,16 +222,18 @@ class QueueManager:
             async def dl_progress(current, total):
                 if task.cancel_event.is_set():
                     raise asyncio.CancelledError()
+                action_text = "📥 Downloading video for album..." if is_album_mode else "📥 Downloading media stream..."
                 await update_status_message(
                     client=client,
                     chat_id=task.chat_id,
                     message_id=task.status_msg_id,
                     task_id=task.id,
-                    action="📥 Downloading...",
+                    action=action_text,
                     current=current,
                     total=total,
                     start_time=start_dl_time,
-                    file_name=title
+                    file_name=title,
+                    is_album=is_album_mode
                 )
 
             if stream_type == "m3u8":
@@ -343,7 +349,11 @@ class QueueManager:
                     chat_id=task.chat_id,
                     message_id=task.status_msg_id,
                     task_id=task.id,
-                    action="⏳ Downloaded! Waiting for other album videos...",
+                    action="✅ Download Complete! ⏳ Bundling into Video Album...",
+                    current=downloaded_file.stat().st_size,
+                    total=downloaded_file.stat().st_size,
+                    file_name=downloaded_file.name,
+                    is_album=True,
                     force=True
                 )
                 await self._handle_task_completion(client, task, "Done")
@@ -366,11 +376,12 @@ class QueueManager:
                         chat_id=task.chat_id,
                         message_id=task.status_msg_id,
                         task_id=task.id,
-                        action="📤 Uploading to Telegram...",
+                        action="📤 Uploading Video Player to Telegram...",
                         current=current,
                         total=total or part_size,
                         start_time=start_up_time,
-                        file_name=part.name
+                        file_name=part.name,
+                        is_album=False
                     )
 
                 caption = user_settings.get("custom_caption") or f"🎬 `{part.name}`"
