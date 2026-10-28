@@ -1,0 +1,18 @@
+# Telegram Bot MTProto Framework
+pyrogram>=2.0.106
+tgcrypto>=1.2.5
+
+# Media Download & Stream Extraction
+yt-dlp>=2024.10.0
+beautifulsoup4>=4.12.0
+playwright>=1.48.0
+
+# Async Network, Filesystem & Database
+aiohttp>=3.9.0
+aiofiles>=24.1.0
+aiosqlite>=0.20.0
+python-dotenv>=1.0.0
+
+# Image & Utility Processing
+Pillow>=10.0.0
+requests>=2.31.0

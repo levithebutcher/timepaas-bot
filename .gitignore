@@ -1,0 +1,40 @@
+# Git ignore rules for Telegram Downloader Bot
+# Security: NEVER commit credentials, tokens, or sessions
+
+# Environments and Secrets
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+
+# Local Google Colab Notebook with user credentials
+*.ipynb
+Timepass_Bot_Colab.ipynb
+
+# Downloads and Temporary Files
+downloads/
+temp/
+extracted/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# OS specific
+.DS_Store
+Thumbs.db
