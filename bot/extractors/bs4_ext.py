@@ -1,3 +1,4 @@
+import re
 import logging
 from urllib.parse import urljoin, urlparse
 import aiohttp
@@ -90,6 +91,29 @@ async def extract_with_bs4(url: str) -> dict:
                             "title": full_url.split("/")[-1].split("?")[0] or "downloaded_file",
                             "headers": headers
                         }
+
+        # 4. Search for Dean Edwards packed JS or inline .m3u8/.mp4 stream URLs
+        unpacked_or_html = html
+        if "eval(function(p,a,c,k,e,d)" in html:
+            from bot.extractors.video_hosts import unpack_dean_edwards
+            unpacked = unpack_dean_edwards(html)
+            if unpacked:
+                unpacked_or_html = html + "\n" + unpacked
+
+        m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', unpacked_or_html)
+        if m3u8_matches:
+            title_tag = soup.find("title")
+            title = "stream_video.mp4"
+            if title_tag and title_tag.text:
+                title = re.sub(r"[^\w\s\.\-]", "", title_tag.text).strip().replace(" ", "_")
+                if not title.lower().endswith(".mp4"):
+                    title += ".mp4"
+            return {
+                "type": "m3u8",
+                "url": m3u8_matches[0],
+                "title": title,
+                "headers": headers
+            }
 
     except Exception as e:
         logger.debug(f"BS4 extraction error for {url}: {e}")

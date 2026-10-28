@@ -35,6 +35,43 @@ FILELIONS_DOMAINS = {
     "filelions.com", "filelions.to", "filelions.online", "filelions.site"
 }
 
+LULUSTREAM_DOMAINS = {
+    "luluvid.com", "lulustream.com", "lulu.to", "luluvids.com",
+    "pondr.org", "lulupdo.com"
+}
+
+STREAMFILES_DOMAINS = {
+    "streamfiles.net", "streamfile.net", "streamfiles.org", "streamfiles.site"
+}
+
+
+def unpack_dean_edwards(payload: str) -> str:
+    """
+    Unpacks JavaScript obfuscated with Dean Edwards P.A.C.K.E.R.
+    e.g. eval(function(p,a,c,k,e,d){...}('...', a, c, '...'.split('|')))
+    """
+    pattern = r"eval\(function\(p,a,c,k,e,d\)\{.*?return p\}\('(.*?)',\s*(\d+),\s*(\d+),\s*'([^']*)'\.split\('\|'\)"
+    for m in re.finditer(pattern, payload, re.DOTALL):
+        try:
+            p, a, c, k = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split('|')
+
+            def baseN(num, b):
+                digits = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                res = ""
+                while num > 0:
+                    res = digits[num % b] + res
+                    num //= b
+                return res or "0"
+
+            for idx in range(c - 1, -1, -1):
+                key = baseN(idx, a)
+                val = k[idx] if idx < len(k) and k[idx] else key
+                p = re.sub(r"\b" + re.escape(key) + r"\b", val, p)
+            return p
+        except Exception:
+            continue
+    return ""
+
 
 def is_matching_host(netloc: str, domain_set: set[str]) -> bool:
     """Checks if netloc matches or is a subdomain of domain_set entries."""
@@ -312,17 +349,111 @@ async def resolve_streamwish(url: str) -> dict:
                     return None
                 html = await resp.text()
 
-        # Find m3u8 source URL
-        m3u8_match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', html)
-        if m3u8_match:
+        # Find m3u8 source URL in plain HTML or via Dean Edwards unpacker
+        m3u8_matches = re.findall(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', html)
+        if not m3u8_matches:
+            unpacked = unpack_dean_edwards(html)
+            if unpacked:
+                m3u8_matches = re.findall(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', unpacked)
+
+        if m3u8_matches:
+            title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
+            title = "streamwish_video.mp4"
+            if title_match:
+                title = title_match.group(1).strip()
+                if not title.lower().endswith(".mp4"):
+                    title += ".mp4"
             return {
                 "type": "m3u8",
-                "url": m3u8_match.group(1),
-                "title": "streamwish_video.mp4",
+                "url": m3u8_matches[0],
+                "title": title,
                 "headers": headers
             }
     except Exception as e:
         logger.debug(f"Streamwish extraction failed for {url}: {e}")
+    return None
+
+
+async def resolve_luluvid(url: str) -> dict:
+    """Extracts direct m3u8 stream from LuluStream / LuluVid via unpacked JS."""
+    parsed = urlparse(url)
+    base_origin = f"{parsed.scheme}://{parsed.netloc}"
+    headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"{base_origin}/"}
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+
+        title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
+        title = "lulustream_video.mp4"
+        if title_match:
+            raw_title = title_match.group(1).strip()
+            clean_title = re.sub(r"\s*-\s*Lulustream(\.mp4)?", "", raw_title, flags=re.IGNORECASE).strip()
+            if not clean_title.lower().endswith(".mp4"):
+                clean_title += ".mp4"
+            title = clean_title
+
+        # Check if m3u8 is already directly present
+        m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
+        if not m3u8_matches:
+            unpacked = unpack_dean_edwards(html)
+            if unpacked:
+                m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', unpacked)
+
+        if m3u8_matches:
+            logger.info(f"LuluStream stream resolved: {title}")
+            return {
+                "type": "m3u8",
+                "url": m3u8_matches[0],
+                "title": title,
+                "headers": headers
+            }
+    except Exception as e:
+        logger.debug(f"LuluStream extraction failed for {url}: {e}")
+    return None
+
+
+async def resolve_streamfiles(url: str) -> dict:
+    """Extracts direct m3u8 stream from StreamFiles."""
+    parsed = urlparse(url)
+    base_origin = f"{parsed.scheme}://{parsed.netloc}"
+    headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"{base_origin}/"}
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+
+        title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
+        title = "streamfiles_video.mp4"
+        if title_match:
+            raw_title = title_match.group(1).strip()
+            clean_title = re.sub(r"^(Watch|Download)\s+", "", raw_title, flags=re.IGNORECASE).strip()
+            if not clean_title.lower().endswith(".mp4"):
+                clean_title += ".mp4"
+            title = clean_title
+
+        m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
+        if not m3u8_matches:
+            unpacked = unpack_dean_edwards(html)
+            if unpacked:
+                m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', unpacked)
+
+        if m3u8_matches:
+            logger.info(f"StreamFiles stream resolved: {title}")
+            return {
+                "type": "m3u8",
+                "url": m3u8_matches[0],
+                "title": title,
+                "headers": headers
+            }
+    except Exception as e:
+        logger.debug(f"StreamFiles extraction failed for {url}: {e}")
     return None
 
 
@@ -348,5 +479,13 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_matching_host(netloc, STREAMWISH_DOMAINS) or is_matching_host(netloc, FILELIONS_DOMAINS):
         logger.info(f"Target recognized as Streamwish/FileLions: {url}")
         return await resolve_streamwish(url)
+
+    if is_matching_host(netloc, LULUSTREAM_DOMAINS):
+        logger.info(f"Target recognized as LuluStream/LuluVid: {url}")
+        return await resolve_luluvid(url)
+
+    if is_matching_host(netloc, STREAMFILES_DOMAINS):
+        logger.info(f"Target recognized as StreamFiles: {url}")
+        return await resolve_streamfiles(url)
 
     return None

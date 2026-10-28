@@ -91,11 +91,15 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
                     "button:has-text('Download')",
                     "a:has-text('Download')",
                     "button:has-text('Play')",
+                    ".jw-display-icon-container",
+                    ".jw-preview",
+                    ".jw-video",
                     ".vjs-big-play-button",
                     ".play-wrapper",
                     "#mainvideo",
                     "video",
                     "button.play",
+                    "div[class*='play']",
                 ]
                 for selector in selectors_to_try:
                     try:
