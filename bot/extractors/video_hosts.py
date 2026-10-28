@@ -49,7 +49,7 @@ def sanitize_streamtape_url(raw_url: str) -> str:
     """Neutralizes Streamtape decoy domains (stdreamtape, streamtadpe) and ensures valid HTTPS scheme."""
     if not raw_url:
         return ""
-    url = raw_url.strip().strip("'\"")
+    url = re.sub(r"[\x00-\x1f\x7f-\x9f\r\n\t]", "", str(raw_url)).strip().strip("'\"")
     # Fix duplicate domain prefixes (e.g. streamtape.com/streamtape.com/get_video)
     url = re.sub(r"(?:https?://)?(?:[a-z0-9\-]+\.)*streamt[a-z0-9\-]*\.com/(?:[a-z0-9\-]+\.)*streamt[a-z0-9\-]*\.com/", "https://streamtape.com/", url)
     # Neutralize anti-scraper typo domains (stdreamtape.com, streamtadpe.com, streadmtape.com)
@@ -70,19 +70,6 @@ def sanitize_streamtape_url(raw_url: str) -> str:
 
 
 def evaluate_streamtape_js(expr: str) -> str:
-    """Evaluates Streamtape string concatenation and .substring() offsets."""
-    pattern = r"['\"]([^'\"]*)['\"](?:\s*\))?(?:\.substring\((\d+)(?:,\s*(\d+))?\))?"
-    result = []
-    for m in re.finditer(pattern, expr):
-        s = m.group(1)
-        sub1 = m.group(2)
-        sub2 = m.group(3)
-        if sub1 is not None:
-            start = int(sub1)
-            end = int(sub2) if sub2 is not None else None
-            s = s[start:end] if end is not None else s[start:]
-        result.append(s)
-    return "".join(result)
     """Evaluates Streamtape string concatenation and .substring() offsets."""
     pattern = r"['\"]([^'\"]*)['\"](?:\s*\))?(?:\.substring\((\d+)(?:,\s*(\d+))?\))?"
     result = []

@@ -69,7 +69,7 @@ def sanitize_headers(headers: dict = None) -> dict:
         v_str = str(v)
         # Strip forbidden control characters (ASCII 0x00-0x1F and 0x7F-0x9F)
         # Specifically \r (\x0d) and \n (\x0a) which cause ValueError in aiohttp
-        v_clean = re.sub(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]", "", v_str).strip()
+        v_clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", v_str).strip()
         k_clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", k_str).strip()
         if k_clean and v_clean:
             clean[k_clean] = v_clean
@@ -109,6 +109,7 @@ async def _download_via_aria2(
     if not aria2_bin:
         return False
 
+    url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(url).strip())
     clean_headers = sanitize_headers(headers)
     user_agent = clean_headers.get("User-Agent", DEFAULT_USER_AGENT)
     parsed = urlparse(url)
@@ -229,6 +230,7 @@ async def download_direct_stream(
     if not check_free_disk_space():
         raise RuntimeError("Insufficient disk space on host machine to initiate download.")
 
+    url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(url).strip())
     clean_headers = sanitize_headers(headers)
 
     # 1. Accelerated parallel download via aria2c (safe 4 connections)
@@ -332,6 +334,7 @@ async def download_m3u8_stream(
     if not check_free_disk_space():
         raise RuntimeError("Insufficient disk space on host machine.")
 
+    m3u8_url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(m3u8_url).strip())
     clean_headers = sanitize_headers(headers)
     user_agent = clean_headers.get("User-Agent", DEFAULT_USER_AGENT)
     referer = clean_headers.get("Referer", "")
