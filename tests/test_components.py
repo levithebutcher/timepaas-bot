@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from bot.core.progress import format_size, format_time, generate_bar
 from bot.core.archive_manager import is_archive_file
-from bot.core.downloader import parse_aria2_size, derive_filename
+from bot.core.downloader import parse_aria2_size, derive_filename, sanitize_headers
 from bot.handlers.message_parser import URL_REGEX
 
 
@@ -66,6 +66,24 @@ class TestComponents(unittest.TestCase):
             derive_filename("https://example.com/download", {"Content-Disposition": 'attachment; filename="clip.mkv"'}),
             "clip.mkv"
         )
+
+    def test_sanitize_headers(self):
+        dirty = {
+            ":status": "200",
+            "Set-Cookie": "session=xyz\r\n",
+            "User-Agent": "TestAgent\r\nInjected",
+            "Referer": "https://example.com/\n",
+            "Content-Length": "12345"
+        }
+        clean = sanitize_headers(dirty)
+        self.assertNotIn(":status", clean)
+        self.assertNotIn("Set-Cookie", clean)
+        self.assertNotIn("Content-Length", clean)
+        self.assertNotIn("\r", clean.get("User-Agent", ""))
+        self.assertNotIn("\n", clean.get("User-Agent", ""))
+        self.assertNotIn("\n", clean.get("Referer", ""))
+        self.assertEqual(clean.get("User-Agent"), "TestAgentInjected")
+        self.assertEqual(clean.get("Referer"), "https://example.com/")
 
 
 if __name__ == "__main__":

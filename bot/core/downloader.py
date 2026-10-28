@@ -44,6 +44,39 @@ def parse_aria2_size(s: str) -> int:
     return int(val * units.get(unit, 1))
 
 
+def sanitize_headers(headers: dict = None) -> dict:
+    """
+    Sanitizes HTTP request headers to prevent forbidden control characters
+    (CRLF, NULL, control chars) and removes server response headers.
+    """
+    if not headers:
+        return {}
+
+    DISALLOWED_HEADERS = {
+        "set-cookie", "content-length", "content-type", "content-encoding",
+        "transfer-encoding", "connection", "keep-alive", "proxy-authenticate",
+        "proxy-authorization", "te", "trailers", "upgrade", "server", "date",
+        "alt-svc", "cf-ray", "cf-cache-status", "strict-transport-security"
+    }
+
+    clean = {}
+    for k, v in headers.items():
+        if not k or v is None:
+            continue
+        k_str = str(k).strip()
+        if k_str.startswith(":") or k_str.lower() in DISALLOWED_HEADERS:
+            continue
+        v_str = str(v)
+        # Strip forbidden control characters (ASCII 0x00-0x1F and 0x7F-0x9F)
+        # Specifically \r (\x0d) and \n (\x0a) which cause ValueError in aiohttp
+        v_clean = re.sub(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]", "", v_str).strip()
+        k_clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", k_str).strip()
+        if k_clean and v_clean:
+            clean[k_clean] = v_clean
+
+    return clean
+
+
 def _validate_downloaded_file(target_path: Path):
     """Validates that a downloaded file is valid media and not an HTML error webpage."""
     if target_path.exists() and target_path.stat().st_size < 500 * 1024:
@@ -76,9 +109,10 @@ async def _download_via_aria2(
     if not aria2_bin:
         return False
 
-    user_agent = (headers or {}).get("User-Agent", DEFAULT_USER_AGENT)
+    clean_headers = sanitize_headers(headers)
+    user_agent = clean_headers.get("User-Agent", DEFAULT_USER_AGENT)
     parsed = urlparse(url)
-    referer = (headers or {}).get("Referer", f"{parsed.scheme}://{parsed.netloc}/")
+    referer = clean_headers.get("Referer", f"{parsed.scheme}://{parsed.netloc}/")
 
     cmd = [
         aria2_bin,
@@ -96,10 +130,9 @@ async def _download_via_aria2(
     ]
     if referer:
         cmd.append(f"--header=Referer: {referer}")
-    if headers:
-        for k, v in headers.items():
-            if k.lower() not in ("user-agent", "referer"):
-                cmd.append(f"--header={k}: {v}")
+    for k, v in clean_headers.items():
+        if k.lower() not in ("user-agent", "referer"):
+            cmd.append(f"--header={k}: {v}")
     cmd.append(url)
 
     logger.info(f"Starting aria2c accelerated download ({connections} parallel streams) for {target_path.name}")
@@ -197,13 +230,15 @@ async def download_direct_stream(
     if not check_free_disk_space():
         raise RuntimeError("Insufficient disk space on host machine to initiate download.")
 
+    clean_headers = sanitize_headers(headers)
+
     # 1. Accelerated parallel download via aria2c (safe 4 connections)
     if shutil.which("aria2c"):
         try:
             success = await _download_via_aria2(
                 url=url,
                 target_path=target_path,
-                headers=headers,
+                headers=clean_headers,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
                 connections=4
@@ -220,8 +255,7 @@ async def download_direct_stream(
 
     # 2. Resilient chunked aiohttp downloader
     req_headers = {"User-Agent": DEFAULT_USER_AGENT}
-    if headers:
-        req_headers.update(headers)
+    req_headers.update(clean_headers)
 
     # Determine domain for Referer if not already set
     if "Referer" not in req_headers:
@@ -299,8 +333,9 @@ async def download_m3u8_stream(
     if not check_free_disk_space():
         raise RuntimeError("Insufficient disk space on host machine.")
 
-    user_agent = (headers or {}).get("User-Agent", DEFAULT_USER_AGENT)
-    referer = (headers or {}).get("Referer", "")
+    clean_headers = sanitize_headers(headers)
+    user_agent = clean_headers.get("User-Agent", DEFAULT_USER_AGENT)
+    referer = clean_headers.get("Referer", "")
 
     header_str = f"User-Agent: {user_agent}\r\n"
     if referer:

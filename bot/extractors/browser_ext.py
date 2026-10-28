@@ -49,7 +49,10 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
                 for kw in MEDIA_KEYWORDS:
                     if kw in clean_url or "video/" in content_type or "application/x-mpegurl" in content_type:
                         intercepted_url = resp_url
-                        intercepted_headers = await response.all_headers()
+                        intercepted_headers = {
+                            "User-Agent": DEFAULT_USER_AGENT,
+                            "Referer": url
+                        }
                         if ".m3u8" in clean_url or "mpegurl" in content_type:
                             stream_type = "m3u8"
                         else:
