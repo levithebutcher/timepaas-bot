@@ -100,6 +100,17 @@ class TestComponents(unittest.TestCase):
         self.assertEqual(imv.duration, 10)
         self.assertTrue(imv.supports_streaming)
 
+    def test_get_user_settings_async(self):
+        import asyncio
+        from bot.database import init_db, get_user_settings
+        async def run_check():
+            await init_db()
+            settings = await get_user_settings(999999)
+            self.assertIsInstance(settings, dict)
+            self.assertIn("custom_thumb", settings)
+            self.assertIn("custom_caption", settings)
+        asyncio.run(run_check())
+
 
 if __name__ == "__main__":
     unittest.main()

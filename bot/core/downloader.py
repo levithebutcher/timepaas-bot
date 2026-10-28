@@ -117,7 +117,6 @@ async def _download_via_aria2(
     cmd = [
         aria2_bin,
         "--allow-overwrite=true",
-        "--auto-file-allocation=false",
         "--file-allocation=none",
         f"--max-connection-per-server={connections}",
         f"--split={connections}",

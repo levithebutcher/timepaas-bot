@@ -445,7 +445,7 @@ class QueueManager:
         total_processed = batch.done_count + batch.failed_count + batch.cancelled_count
         if total_processed >= batch.total_count:
             if batch.is_album and batch.album_ready_items:
-                user_settings = get_user_settings(batch.user_id)
+                user_settings = await get_user_settings(batch.user_id)
                 album_videos = [(item[0], item[1]) for item in batch.album_ready_items]
                 try:
                     await upload_video_albums(
