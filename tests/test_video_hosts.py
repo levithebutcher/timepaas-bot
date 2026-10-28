@@ -7,6 +7,7 @@ import re
 from bot.extractors.video_hosts import (
     is_matching_host,
     evaluate_streamtape_js,
+    sanitize_streamtape_url,
     STREAMTAPE_DOMAINS,
     DOOD_DOMAINS,
     MIXDROP_DOMAINS,
@@ -86,6 +87,19 @@ class TestVideoHosts(unittest.TestCase):
         expr = "'//streamtape.com/get_video?id=9Bl9qkyZrMCarxy&token=' + ('junkprefix_token123').substring(11)"
         result = evaluate_streamtape_js(expr)
         self.assertEqual(result, "//streamtape.com/get_video?id=9Bl9qkyZrMCarxy&token=token123")
+
+
+    def test_sanitize_streamtape_url(self):
+        # Test neutralizing decoy domains with typos
+        decoy_1 = "https://stdreamtape.com/get_video?id=123&token=abc"
+        self.assertEqual(sanitize_streamtape_url(decoy_1), "https://streamtape.com/get_video?id=123&token=abc")
+
+        decoy_2 = "https://streamtadpe.com/get_video?id=456&token=def"
+        self.assertEqual(sanitize_streamtape_url(decoy_2), "https://streamtape.com/get_video?id=456&token=def")
+
+        # Test fixing duplicate domain prefix
+        dup = "https://streamtape.com/streamtape.com/get_video?id=789"
+        self.assertEqual(sanitize_streamtape_url(dup), "https://streamtape.com/get_video?id=789")
 
 
 if __name__ == "__main__":

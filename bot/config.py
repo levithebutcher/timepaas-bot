@@ -3,9 +3,16 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env file from project root
+# Load .env file from candidate directories (handles Colab /content paths)
 ROOT_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT_DIR / ".env")
+for env_candidate in [
+    ROOT_DIR / ".env",
+    Path.cwd() / ".env",
+    Path("/content/timepaas-bot/.env"),
+    Path("/content/.env")
+]:
+    if env_candidate.exists():
+        load_dotenv(env_candidate, override=True)
 
 # Telegram API & Bot Token
 API_ID = os.getenv("API_ID")
@@ -48,8 +55,8 @@ DATABASE_PATH = ROOT_DIR / "bot_database.db"
 MAX_SPLIT_SIZE_BYTES = int(1.95 * 1024 * 1024 * 1024)
 
 # Optional Streamtape API Credentials
-STREAMTAPE_LOGIN = os.getenv("STREAMTAPE_LOGIN")
-STREAMTAPE_KEY = os.getenv("STREAMTAPE_KEY")
+STREAMTAPE_LOGIN = os.getenv("STREAMTAPE_LOGIN", "").strip().strip('"\'')
+STREAMTAPE_KEY = os.getenv("STREAMTAPE_KEY", "").strip().strip('"\'')
 
 # Headers for browser spoofing
 DEFAULT_USER_AGENT = (

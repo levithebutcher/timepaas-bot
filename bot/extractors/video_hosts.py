@@ -44,7 +44,44 @@ def is_matching_host(netloc: str, domain_set: set[str]) -> bool:
     return False
 
 
+def sanitize_streamtape_url(raw_url: str) -> str:
+    """Neutralizes Streamtape decoy domains (stdreamtape, streamtadpe) and ensures valid HTTPS scheme."""
+    if not raw_url:
+        return ""
+    url = raw_url.strip().strip("'\"")
+    # Fix duplicate domain prefixes (e.g. streamtape.com/streamtape.com/get_video)
+    url = re.sub(r"(?:https?://)?(?:[a-z0-9\-]+\.)*streamt[a-z0-9\-]*\.com/(?:[a-z0-9\-]+\.)*streamt[a-z0-9\-]*\.com/", "https://streamtape.com/", url)
+    # Neutralize anti-scraper typo domains (stdreamtape.com, streamtadpe.com, streadmtape.com)
+    url = re.sub(r"https?://(?:stdreamtape|streamtadpe|streadmtape|streamtapde)\.com", "https://streamtape.com", url)
+    url = url.replace("stdreamtape.com", "streamtape.com").replace("streamtadpe.com", "streamtape.com")
+    
+    if url.startswith("//"):
+        url = "https:" + url
+    elif not url.startswith("http"):
+        if "/get_video" in url:
+            if not url.startswith("/"):
+                url = "/" + url
+            url = "https://streamtape.com" + url
+        else:
+            url = "https://" + url
+
+    return url.replace("\\/", "/").replace("&amp;", "&")
+
+
 def evaluate_streamtape_js(expr: str) -> str:
+    """Evaluates Streamtape string concatenation and .substring() offsets."""
+    pattern = r"['\"]([^'\"]*)['\"](?:\s*\))?(?:\.substring\((\d+)(?:,\s*(\d+))?\))?"
+    result = []
+    for m in re.finditer(pattern, expr):
+        s = m.group(1)
+        sub1 = m.group(2)
+        sub2 = m.group(3)
+        if sub1 is not None:
+            start = int(sub1)
+            end = int(sub2) if sub2 is not None else None
+            s = s[start:end] if end is not None else s[start:]
+        result.append(s)
+    return "".join(result)
     """Evaluates Streamtape string concatenation and .substring() offsets."""
     pattern = r"['\"]([^'\"]*)['\"](?:\s*\))?(?:\.substring\((\d+)(?:,\s*(\d+))?\))?"
     result = []
@@ -137,13 +174,12 @@ async def resolve_streamtape(url: str) -> dict:
                     # A. Check video#mainvideo tag src in HTML
                     vid_tag_match = re.search(r'<video[^>]+id=["\']mainvideo["\'][^>]+src=["\']([^"\']+)["\']', html)
                     if vid_tag_match:
-                        stream_url = vid_tag_match.group(1)
-                        if "/get_video" in stream_url:
-                            if stream_url.startswith("//"):
-                                stream_url = "https:" + stream_url
+                        raw_src = vid_tag_match.group(1)
+                        if "/get_video" in raw_src:
+                            clean_direct = sanitize_streamtape_url(raw_src)
                             return {
                                 "type": "direct",
-                                "url": stream_url,
+                                "url": clean_direct,
                                 "title": original_filename,
                                 "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"https://{domain}/"}
                             }
@@ -177,16 +213,11 @@ async def resolve_streamtape(url: str) -> dict:
                             stream_url = match.group(1)
 
                     if stream_url:
-                        if stream_url.startswith("//"):
-                            stream_url = "https:" + stream_url
-                        elif not stream_url.startswith("http"):
-                            stream_url = f"https://{domain}" + stream_url
-
-                        stream_url = stream_url.replace("\\/", "/").replace("&amp;", "&")
+                        clean_direct = sanitize_streamtape_url(stream_url)
                         logger.info(f"Streamtape stream extracted via scraper: {original_filename}")
                         return {
                             "type": "direct",
-                            "url": stream_url,
+                            "url": clean_direct,
                             "title": original_filename,
                             "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"https://{domain}/"}
                         }

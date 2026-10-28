@@ -2,7 +2,7 @@ import asyncio
 import logging
 import sys
 from pyrogram import Client
-from bot.config import API_ID, API_HASH, BOT_TOKEN
+from bot.config import API_ID, API_HASH, BOT_TOKEN, STREAMTAPE_LOGIN, STREAMTAPE_KEY
 from bot.core.cleaner import clean_temp_directories
 from bot.core.queue_manager import queue_manager
 from bot.database import init_db
@@ -47,6 +47,11 @@ async def run_app():
 
     async with app:
         logger.info("Bot started successfully on MTProto client.")
+        if STREAMTAPE_LOGIN and STREAMTAPE_KEY:
+            logger.info(f"Streamtape Official API: ENABLED (User: {STREAMTAPE_LOGIN[:4]}***)")
+        else:
+            logger.warning("Streamtape Official API: NOT DETECTED (Using fallback scraper)")
+
         # Start background queue workers
         await queue_manager.start_workers(app)
         logger.info("All queue workers active and waiting for tasks.")
