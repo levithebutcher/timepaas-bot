@@ -37,3 +37,29 @@ async def callback_handler(client: Client, callback: CallbackQuery):
                 pass
         else:
             await callback.answer("Task is already finished or cannot be cancelled.", show_alert=True)
+        return
+
+    if data.startswith("zipchoice:"):
+        parts = data.split(":")
+        if len(parts) == 3:
+            task_id = parts[1]
+            choice = parts[2]
+            fut = queue_manager.decision_futures.get(task_id)
+            if fut and not fut.done():
+                fut.set_result(choice)
+                choice_labels = {
+                    "images": "🖼️ Only Images (Chat me)",
+                    "zip": "📦 Only ZIP File",
+                    "both": "✨ Both (ZIP + Images)"
+                }
+                label = choice_labels.get(choice, choice)
+                await callback.answer(f"Option selected: {label}")
+                try:
+                    await callback.message.edit_text(
+                        f"✅ **Aapne select kiya:** {label}\nUploading shuru ho rahi hai..."
+                    )
+                except Exception:
+                    pass
+            else:
+                await callback.answer("Option expire ho gaya ya pehle hi process ho chuka hai.", show_alert=True)
+        return

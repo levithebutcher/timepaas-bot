@@ -61,6 +61,7 @@ class QueueManager:
         self.queue = asyncio.Queue()
         self.tasks: dict[str, DownloadTask] = {}
         self.batches: dict[str, BatchInfo] = {}
+        self.decision_futures: dict[str, asyncio.Future] = {}
         self._user_task_counts: dict[int, int] = {}
         self._workers: list[asyncio.Task] = []
 
@@ -86,11 +87,59 @@ class QueueManager:
         await self.queue.put(task)
         logger.info(f"Task {task.id} enqueued for user {task.user_id}")
 
+    async def _prompt_zip_choice(self, client, task: DownloadTask, filename: str, count: int) -> str:
+        """Prompts user with inline buttons when a ZIP contains > 50 images."""
+        fut = asyncio.get_running_loop().create_future()
+        self.decision_futures[task.id] = fut
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"🖼️ Images Only ({count})", callback_data=f"zipchoice:{task.id}:images"),
+                InlineKeyboardButton("📦 ZIP File Only", callback_data=f"zipchoice:{task.id}:zip")
+            ],
+            [
+                InlineKeyboardButton("✨ Send Both (ZIP + Images)", callback_data=f"zipchoice:{task.id}:both")
+            ]
+        ])
+
+        try:
+            prompt_msg = await client.send_message(
+                chat_id=task.chat_id,
+                text=(
+                    f"📦 **Large Image Archive Detected!**\n"
+                    f"File: `{filename}` contains **{count} images**.\n\n"
+                    f"Kripya option choose karein ki aapko ye images kaise chahiye (60s timer):"
+                ),
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send zip choice prompt: {e}")
+            self.decision_futures.pop(task.id, None)
+            return "both"
+
+        choice = "both"
+        try:
+            choice = await asyncio.wait_for(fut, timeout=60.0)
+        except asyncio.TimeoutError:
+            try:
+                await prompt_msg.edit_text(
+                    f"⏰ **Timeout (60s):** Auto-selected **Both (ZIP + Images)** for `{filename}`."
+                )
+            except Exception:
+                pass
+        finally:
+            self.decision_futures.pop(task.id, None)
+
+        return choice
+
     def cancel_task(self, task_id: str) -> bool:
         task = self.tasks.get(task_id)
         if task and task.status not in ("Done", "Failed", "Cancelled"):
             task.status = "Cancelled"
             task.cancel_event.set()
+            fut = self.decision_futures.pop(task_id, None)
+            if fut and not fut.done():
+                fut.cancel()
             logger.info(f"Task {task_id} marked as cancelled.")
             return True
         return False
@@ -218,10 +267,31 @@ class QueueManager:
                         text=f"⚠️ **Note:** `{downloaded_file.name}` is password-protected. Uploading as raw archive document."
                     )
                 elif archive_result["success"] and (archive_result["videos"] or archive_result["images"]):
-                    # Upload extracted media directly!
+                    img_count = len(archive_result["images"])
+                    choice = "images"  # default for <= 50 images
+
+                    if img_count > 50:
+                        choice = await self._prompt_zip_choice(
+                            client, task, downloaded_file.name, img_count
+                        )
+
                     task.status = "Uploading Media"
-                    
-                    # Upload Videos
+
+                    # 1. Send raw ZIP file if user chose 'zip' or 'both'
+                    if choice in ("zip", "both"):
+                        await upload_file(
+                            client=client,
+                            chat_id=task.chat_id,
+                            file_path=downloaded_file,
+                            caption=f"📦 `{downloaded_file.name}`",
+                            as_document=True
+                        )
+
+                    # 2. Send Extracted Images as Albums if user chose 'images' or 'both'
+                    if choice in ("images", "both") and archive_result["images"]:
+                        await upload_photo_albums(client, task.chat_id, archive_result["images"])
+
+                    # 3. Always send any videos found in archive
                     for vid in archive_result["videos"]:
                         if task.cancel_event.is_set():
                             raise asyncio.CancelledError()
@@ -232,10 +302,6 @@ class QueueManager:
                             caption=f"🎥 `{vid.name}`",
                             custom_thumb=user_settings.get("custom_thumb")
                         )
-
-                    # Upload Images as Albums
-                    if archive_result["images"]:
-                        await upload_photo_albums(client, task.chat_id, archive_result["images"])
 
                     remove_path(archive_result["extract_path"])
                     task.status = "Done"

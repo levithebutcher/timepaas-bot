@@ -15,7 +15,11 @@ Designed to run seamlessly on **Google Colab Free Tier**, **Linux/VPS**, and **W
   2. `BeautifulSoup4` (HTML `<video>`, `<source>`, and direct download anchors)
   3. `Playwright` (headless Chromium network sniffer to intercept dynamic streaming URLs)
   4. Automatic `ffmpeg` remuxing of `.m3u8` manifests into `.mp4` containers.
-- **ZIP & Archive Support:** Automatically extracts `.zip`, `.rar`, and `.7z` archives. Uploads enclosed videos as video players and photos as grouped Telegram Media Albums (10 photos per album). Password-protected archives are safely uploaded as raw documents.
+- **ZIP & Archive Support:** Automatically extracts `.zip`, `.rar`, and `.7z` archives. Uploads enclosed videos as video players and photos as grouped Telegram Media Albums (10 photos per album). If an archive contains **more than 50 images**, the bot presents interactive buttons asking whether you want:
+  1. `🖼️ Images Only` (uploaded to chat in albums)
+  2. `📦 ZIP File Only` (uploaded as raw document)
+  3. `✨ Both (ZIP + Images)` (uploaded both ways)
+  Password-protected archives are safely uploaded as raw documents.
 - **2GB Uploads with Auto-Split:** Video files under 1.95 GB are uploaded directly with auto-generated thumbnails and duration. Files exceeding 1.95 GB are automatically split into parts via `ffmpeg` without re-encoding quality loss.
 - **FloodWait-Safe Live Progress:** Throttled status updates (every 5 seconds) displaying progress bar, speed, ETA, and size, with an inline **Cancel** button per task.
 - **Batch Summaries:** Sends a final summary report once all links in a batch finish (`X finished, Y failed, Z cancelled`).
