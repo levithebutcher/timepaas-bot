@@ -147,6 +147,20 @@ class TestComponents(unittest.TestCase):
         ]
         self.assertEqual(natural_sort_urls(no_digits), no_digits)
 
+        # 4. Mixed URLs starting with int vs str (e.g. 1_...348.mp4 vs Riding_2.mp4 vs Hardcore.mp4)
+        mixed = [
+            "https://streamtape.com/v/Magep9PXjdim4mw/1_4940488481018219348.mp4",
+            "https://streamtape.com/v/23lJ2Km1mQUWa7/Hardcore.mp4",
+            "https://streamtape.com/v/AlgDvjGeeRtBRW/Riding_2.mp4",
+            "https://streamtape.com/v/LaAoA64Z60iRqpo/1_4940488481018219350.mp4"
+        ]
+        sorted_mixed = natural_sort_urls(mixed)
+        self.assertEqual(len(sorted_mixed), 4)
+        self.assertEqual(sorted_mixed[0], mixed[0])  # 1_...348
+        self.assertEqual(sorted_mixed[1], mixed[3])  # 1_...350
+        self.assertEqual(sorted_mixed[2], mixed[2])  # Riding_2
+        self.assertEqual(sorted_mixed[3], mixed[1])  # Hardcore (no digits fallback)
+
     def test_batch_summary_pagination_safety(self):
         import asyncio
         from bot.core.queue_manager import QueueManager, BatchInfo
