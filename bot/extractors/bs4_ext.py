@@ -54,10 +54,16 @@ async def extract_with_bs4(url: str) -> dict:
                 continue
 
             full_url = urljoin(url, href)
+            if full_url == url:
+                continue
+
             clean_path = urlparse(full_url).path.lower()
+            is_page_route = any(p in clean_path for p in ("/v/", "/e/", "/watch/", "/embed/", "/view/", "/play/", "/file/", "/f/", "/d/"))
+            if is_page_route:
+                continue
 
             for ext in TARGET_EXTENSIONS:
-                if clean_path.endswith(ext) or ext in clean_path:
+                if clean_path.endswith(ext):
                     return {
                         "type": "m3u8" if ".m3u8" in clean_path else "direct",
                         "url": full_url,
@@ -71,14 +77,19 @@ async def extract_with_bs4(url: str) -> dict:
             href = a.get("href", "").strip()
             if "download" in text or a.get("download") is not None:
                 full_url = urljoin(url, href)
-                # Verify that it's not a generic page reload
-                if full_url != url:
-                    return {
-                        "type": "direct",
-                        "url": full_url,
-                        "title": "downloaded_file",
-                        "headers": headers
-                    }
+                clean_path = urlparse(full_url).path.lower()
+                is_page_route = any(p in clean_path for p in ("/v/", "/e/", "/watch/", "/embed/", "/view/", "/play/", "/file/", "/f/", "/d/"))
+                if is_page_route or full_url == url:
+                    continue
+
+                for ext in TARGET_EXTENSIONS:
+                    if clean_path.endswith(ext):
+                        return {
+                            "type": "direct",
+                            "url": full_url,
+                            "title": full_url.split("/")[-1].split("?")[0] or "downloaded_file",
+                            "headers": headers
+                        }
 
     except Exception as e:
         logger.debug(f"BS4 extraction error for {url}: {e}")

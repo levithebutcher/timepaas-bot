@@ -5,7 +5,10 @@ from bot.config import DEFAULT_USER_AGENT
 
 logger = logging.getLogger(__name__)
 
-MEDIA_KEYWORDS = [".m3u8", ".mp4", ".webm", ".mkv", ".zip", ".rar"]
+MEDIA_KEYWORDS = [
+    ".m3u8", ".mp4", ".webm", ".mkv", ".zip", ".rar",
+    "/get_video", "tapecontent.net", "pass_md5", "delivery"
+]
 
 
 async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
@@ -60,6 +63,25 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
             except Exception as e:
                 logger.debug(f"Playwright navigation timeout/error for {url}: {e}")
 
+            # Check if a video element with a source already exists in the DOM
+            try:
+                dom_video_src = await page.evaluate("""() => {
+                    const v = document.querySelector('video#mainvideo') || document.querySelector('video');
+                    if (v && v.src && v.src.length > 5 && !v.src.startsWith('blob:')) {
+                        return v.src;
+                    }
+                    const s = document.querySelector('video source');
+                    if (s && s.src && s.src.length > 5 && !s.src.startsWith('blob:')) {
+                        return s.src;
+                    }
+                    return null;
+                }""")
+                if dom_video_src:
+                    intercepted_url = dom_video_src
+                    logger.info(f"Playwright found direct video src in DOM: {dom_video_src[:60]}...")
+            except Exception as e:
+                logger.debug(f"Error evaluating DOM video src: {e}")
+
             # Try clicking play or download elements if not yet intercepted
             if not intercepted_url:
                 selectors_to_try = [
@@ -67,6 +89,8 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
                     "a:has-text('Download')",
                     "button:has-text('Play')",
                     ".vjs-big-play-button",
+                    ".play-wrapper",
+                    "#mainvideo",
                     "video",
                     "button.play",
                 ]
@@ -81,11 +105,19 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
                     except Exception:
                         pass
 
-            # Wait briefly for any delayed network calls
-            wait_intervals = 5
+            # Wait briefly for any delayed network calls or DOM updates
+            wait_intervals = 6
             while not intercepted_url and wait_intervals > 0:
                 await asyncio.sleep(1)
                 wait_intervals -= 1
+                try:
+                    dom_src = await page.evaluate("() => document.querySelector('video#mainvideo')?.src || document.querySelector('video')?.src")
+                    if dom_src and len(dom_src) > 5 and not dom_src.startswith("blob:"):
+                        intercepted_url = dom_src
+                        logger.info(f"Playwright captured video src from DOM update: {dom_src[:60]}...")
+                        break
+                except Exception:
+                    pass
 
             await browser.close()
 

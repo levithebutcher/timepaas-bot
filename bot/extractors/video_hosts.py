@@ -63,7 +63,7 @@ def evaluate_streamtape_js(expr: str) -> str:
 async def resolve_streamtape(url: str) -> dict:
     """
     Extracts direct video URL from Streamtape.
-    Tries official API first if credentials exist, then falls back to direct HTML JS parsing,
+    Tries official API first if credentials exist, then falls back to direct HTML JS parsing across mirrors,
     and finally to Playwright headless sniffer.
     """
     parsed = urlparse(url)
@@ -73,7 +73,7 @@ async def resolve_streamtape(url: str) -> dict:
     if not parts:
         return None
     file_id = parts[0]
-    
+
     # Extract original filename if present (e.g. 02.mp4)
     original_filename = parts[1] if len(parts) > 1 and "." in parts[1] else f"streamtape_{file_id}.mp4"
     clean_embed_url = f"https://streamtape.com/e/{file_id}"
@@ -106,54 +106,87 @@ async def resolve_streamtape(url: str) -> dict:
         except Exception as e:
             logger.debug(f"Streamtape API extraction failed: {e}")
 
-    # 2. Zero-Config Web Scraper Mode (evaluates JS token)
+    # 2. Zero-Config Web Scraper across Streamtape domain mirrors
+    mirrors = ["streamtape.com", "streamtape.to", "strtape.tech", "streamta.pe"]
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
-        "Referer": f"https://streamtape.com/v/{file_id}"
+        "Referer": "https://streamtape.com/"
     }
 
+    elem_ids = [
+        "robotlink", "ideoolink", "norobotlink", "videolink",
+        "ideoooolink", "cphdlk", "linko", "botlink"
+    ]
+
     try:
-        timeout = aiohttp.ClientTimeout(total=20)
+        timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            # Try embed URL first, then view URL
-            for target_url in [clean_embed_url, f"https://streamtape.com/v/{file_id}"]:
-                async with session.get(target_url, allow_redirects=True) as response:
-                    if response.status != 200:
+            for domain in mirrors:
+                for target_url in [f"https://{domain}/e/{file_id}", f"https://{domain}/v/{file_id}"]:
+                    try:
+                        async with session.get(target_url, allow_redirects=True) as response:
+                            if response.status != 200:
+                                continue
+                            html = await response.text()
+                    except Exception:
                         continue
-                    html = await response.text()
 
-                # Find script assignment targeting innerHTML
-                assign_match = re.search(
-                    r"document\.getElementById\(['\"](?:robotlink|ideoolink|norobotlink|cphdlk|linko)['\"]\)\.innerHTML\s*=\s*(.+?);",
-                    html
-                )
-                stream_url = None
-                if assign_match:
-                    expr = assign_match.group(1)
-                    evaluated = evaluate_streamtape_js(expr)
-                    if "/get_video" in evaluated:
-                        stream_url = evaluated
+                    # A. Check video#mainvideo tag src in HTML
+                    vid_tag_match = re.search(r'<video[^>]+id=["\']mainvideo["\'][^>]+src=["\']([^"\']+)["\']', html)
+                    if vid_tag_match:
+                        stream_url = vid_tag_match.group(1)
+                        if "/get_video" in stream_url:
+                            if stream_url.startswith("//"):
+                                stream_url = "https:" + stream_url
+                            return {
+                                "type": "direct",
+                                "url": stream_url,
+                                "title": original_filename,
+                                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"https://{domain}/"}
+                            }
 
-                if not stream_url:
-                    # Generic pattern fallback
-                    match = re.search(r"['\"]((?:https?:)?//[^\s'\"]+streamtape\.com/get_video\?[^'\"]+)['\"]", html)
-                    if match:
-                        stream_url = match.group(1)
+                    # B. Check script innerHTML assignments for known element IDs
+                    stream_url = None
+                    for eid in elem_ids:
+                        assign_match = re.search(
+                            r"document\.getElementById\(['\"]" + eid + r"['\"]\)\.innerHTML\s*=\s*(.+?);",
+                            html
+                        )
+                        if assign_match:
+                            expr = assign_match.group(1)
+                            evaluated = evaluate_streamtape_js(expr)
+                            if "/get_video" in evaluated:
+                                stream_url = evaluated
+                                break
 
-                if stream_url:
-                    if stream_url.startswith("//"):
-                        stream_url = "https:" + stream_url
-                    elif not stream_url.startswith("http"):
-                        stream_url = "https://streamtape.com" + stream_url
+                        # Check static div contents <div id="videolink">...</div>
+                        tag_match = re.search(r"id=['\"]" + eid + r"['\"][^>]*>([^<]+)</div>", html)
+                        if tag_match:
+                            text = tag_match.group(1).strip()
+                            if "/get_video" in text:
+                                stream_url = text
+                                break
 
-                    stream_url = stream_url.replace("\\/", "/").replace("&amp;", "&")
-                    logger.info(f"Streamtape stream successfully extracted via scraper: {original_filename}")
-                    return {
-                        "type": "direct",
-                        "url": stream_url,
-                        "title": original_filename,
-                        "headers": headers
-                    }
+                    if not stream_url:
+                        # C. Broad /get_video regex fallback
+                        match = re.search(r"['\"]((?:https?:)?//[^\s'\"]+/get_video\?[^'\"]+)['\"]", html)
+                        if match:
+                            stream_url = match.group(1)
+
+                    if stream_url:
+                        if stream_url.startswith("//"):
+                            stream_url = "https:" + stream_url
+                        elif not stream_url.startswith("http"):
+                            stream_url = f"https://{domain}" + stream_url
+
+                        stream_url = stream_url.replace("\\/", "/").replace("&amp;", "&")
+                        logger.info(f"Streamtape stream extracted via scraper: {original_filename}")
+                        return {
+                            "type": "direct",
+                            "url": stream_url,
+                            "title": original_filename,
+                            "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"https://{domain}/"}
+                        }
 
     except Exception as e:
         logger.debug(f"Streamtape scraper failed for {url}: {e}")
