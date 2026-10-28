@@ -236,17 +236,24 @@ async def upload_video_albums(
     custom_thumb: str = None
 ):
     """
-    Uploads a list of video files grouped into Telegram video albums (up to 10 per media group).
-    If only 1 video, uploads via upload_file().
+    Uploads a list of video files grouped into Telegram video albums.
+    Uses safe chunk sizes (max 3 videos per album) to prevent MTProto broken pipe/timeouts.
+    Falls back cleanly to individual upload_file if send_media_group encounters any error or timeout.
     """
     if len(video_items) == 1:
         v_path, caption = video_items[0]
         await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
         return
 
-    chunk_size = 10
+    # Keep chunk size small (max 3 videos) because Telegram MTProto socket drops on heavy video albums
+    chunk_size = 3
     for i in range(0, len(video_items), chunk_size):
         chunk = video_items[i:i + chunk_size]
+        if len(chunk) == 1:
+            v_path, caption = chunk[0]
+            await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
+            continue
+
         media_group = []
         temp_thumbs = []
 
@@ -276,12 +283,19 @@ async def upload_video_albums(
             )
 
         try:
-            await client.send_media_group(chat_id=chat_id, media=media_group)
-            await asyncio.sleep(2.0)  # Rate limit buffer
+            # Enforce 90-second timeout so Pyrogram doesn't hang in infinite socket retry loop
+            await asyncio.wait_for(
+                client.send_media_group(chat_id=chat_id, media=media_group),
+                timeout=90.0
+            )
+            await asyncio.sleep(2.0)
         except Exception as e:
-            logger.error(f"Failed to send video media group ({e}), falling back to individual uploads")
+            logger.warning(f"send_media_group failed or timed out ({e}), falling back to individual uploads")
             for v_path, caption in chunk:
-                await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
+                try:
+                    await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
+                except Exception as ex:
+                    logger.error(f"Fallback single upload failed for {v_path.name}: {ex}")
         finally:
             for t in temp_thumbs:
                 remove_path(t)
