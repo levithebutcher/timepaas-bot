@@ -109,6 +109,7 @@ async def _download_via_aria2(
     if not aria2_bin:
         return False
 
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(url).strip())
     clean_headers = sanitize_headers(headers)
     user_agent = clean_headers.get("User-Agent", DEFAULT_USER_AGENT)
@@ -230,6 +231,7 @@ async def download_direct_stream(
     if not check_free_disk_space():
         raise RuntimeError("Insufficient disk space on host machine to initiate download.")
 
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(url).strip())
     clean_headers = sanitize_headers(headers)
 
@@ -334,6 +336,7 @@ async def download_m3u8_stream(
     if not check_free_disk_space():
         raise RuntimeError("Insufficient disk space on host machine.")
 
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     m3u8_url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(m3u8_url).strip())
     clean_headers = sanitize_headers(headers)
     user_agent = clean_headers.get("User-Agent", DEFAULT_USER_AGENT)

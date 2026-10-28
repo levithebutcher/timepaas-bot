@@ -243,19 +243,22 @@ async def upload_video_albums(
     client,
     chat_id: int,
     video_items: list[tuple[Path, str]],
-    custom_thumb: str = None
+    custom_thumb: str = None,
+    chunk_size: int = 10
 ):
     """
     Uploads a list of video files grouped into Telegram video albums.
-    Uses safe chunk sizes (max 3 videos per album) to prevent MTProto broken pipe/timeouts.
+    Uses chunk sizes up to 10 videos per album (Telegram's official max media group size).
     Falls back cleanly to individual upload_file if send_media_group encounters any error or timeout.
     """
+    if not video_items:
+        return
+
     if len(video_items) == 1:
         v_path, caption = video_items[0]
         await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
         return
 
-    chunk_size = 3
     for i in range(0, len(video_items), chunk_size):
         chunk = video_items[i:i + chunk_size]
         if len(chunk) == 1:
@@ -293,11 +296,12 @@ async def upload_video_albums(
             )
 
         async with _UPLOAD_SEMAPHORE:
+            timeout_sec = max(300.0, len(chunk) * 60.0)
             try:
-                # Enforce 90-second timeout so Pyrogram doesn't hang in infinite socket retry loop
+                # Dynamic timeout based on batch size to prevent premature socket aborts
                 await asyncio.wait_for(
                     client.send_media_group(chat_id=chat_id, media=media_group),
-                    timeout=90.0
+                    timeout=timeout_sec
                 )
                 await asyncio.sleep(2.0)
             except Exception as e:
@@ -308,6 +312,8 @@ async def upload_video_albums(
                     except Exception as ex:
                         logger.error(f"Fallback single upload failed for {v_path.name}: {ex}")
             finally:
+                for t in temp_thumbs:
+                    remove_path(t)
                 for t in temp_thumbs:
                     remove_path(t)
 

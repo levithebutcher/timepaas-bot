@@ -19,8 +19,13 @@ from bot.config import (
     EXTRACT_DIR,
     MAX_SPLIT_SIZE_BYTES
 )
-from bot.core.cleaner import remove_path
-from bot.core.progress import update_status_message
+from bot.core.cleaner import remove_path, get_free_disk_gb
+from bot.core.progress import (
+    update_status_message,
+    update_album_pipeline_dashboard,
+    format_size,
+    format_time
+)
 from bot.core.downloader import download_direct_stream, download_m3u8_stream, derive_filename
 from bot.core.splitter import split_video_file
 from bot.core.archive_manager import is_archive_file, extract_archive
@@ -58,6 +63,8 @@ class BatchInfo:
     cancelled_count: int = 0
     failed_urls: list[tuple[str, str]] = field(default_factory=list)
     album_ready_items: list[tuple[Path, str, int]] = field(default_factory=list)
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    status_msg_id: int = 0
 
 
 class QueueManager:
@@ -73,14 +80,35 @@ class QueueManager:
     def get_user_active_count(self, user_id: int) -> int:
         return self._user_task_counts.get(user_id, 0)
 
-    def register_batch(self, batch_id: str, chat_id: int, user_id: int, total_count: int, is_album: bool = False):
-        self.batches[batch_id] = BatchInfo(
+    def register_batch(
+        self,
+        batch_id: str,
+        chat_id: int,
+        user_id: int,
+        total_count: int,
+        is_album: bool = False,
+        status_msg_id: int = 0
+    ) -> BatchInfo:
+        batch = BatchInfo(
             batch_id=batch_id,
             chat_id=chat_id,
             user_id=user_id,
             total_count=total_count,
-            is_album=is_album
+            is_album=is_album,
+            status_msg_id=status_msg_id
         )
+        self.batches[batch_id] = batch
+        return batch
+
+    def cancel_batch(self, batch_id: str) -> bool:
+        batch = self.batches.get(batch_id)
+        if batch and not batch.cancel_event.is_set():
+            batch.cancel_event.set()
+            for t_id in batch.task_ids:
+                self.cancel_task(t_id)
+            logger.info(f"Batch {batch_id} marked as cancelled.")
+            return True
+        return False
 
     async def enqueue_task(self, task: DownloadTask):
         self.tasks[task.id] = task
@@ -489,33 +517,289 @@ class QueueManager:
 
             await self._send_batch_summary(client, batch)
 
+    async def process_album_pipeline(self, client, batch: BatchInfo, urls: list[str], status_msg_id: int):
+        """
+        Executes an album job using Double-Buffered Pipelining (Producer-Consumer):
+        - Chunks links into packs of up to 10 (Telegram max media group).
+        - Chunk N downloads while Chunk N-1 uploads concurrently, doubling throughput.
+        - Wipes uploaded video files immediately after upload to conserve disk.
+        - Dynamic disk guard: pauses next download if disk space < 5GB until upload clears.
+        - Single unified dashboard message with throttled updates.
+        - Safe pagination of completion summary.
+        """
+        batch.status_msg_id = status_msg_id
+        total_files = len(urls)
+        chunk_size = 10
+        chunks = [urls[i:i + chunk_size] for i in range(0, total_files, chunk_size)]
+        total_albums = len(chunks)
+        user_settings = await get_user_settings(batch.user_id)
+
+        # Track user task load
+        curr_load = self._user_task_counts.get(batch.user_id, 0)
+        self._user_task_counts[batch.user_id] = curr_load + total_files
+
+        completed_files = 0
+        uploaded_albums = 0
+        current_dl_info = None
+        current_up_info = None
+
+        async def refresh_dashboard(force: bool = False):
+            try:
+                await update_album_pipeline_dashboard(
+                    client=client,
+                    chat_id=batch.chat_id,
+                    message_id=status_msg_id,
+                    batch_id=batch.batch_id,
+                    total_files=total_files,
+                    completed_files=completed_files,
+                    total_albums=total_albums,
+                    uploaded_albums=uploaded_albums,
+                    current_dl=current_dl_info,
+                    current_up=current_up_info,
+                    force=force
+                )
+            except Exception as e:
+                logger.debug(f"Failed to refresh album dashboard: {e}")
+
+        current_upload_task = None
+        prev_chunk_dir = None
+
+        try:
+            for chunk_idx, chunk_urls in enumerate(chunks):
+                if batch.cancel_event.is_set():
+                    logger.info(f"Album pipeline {batch.batch_id} cancelled.")
+                    break
+
+                # 1. Dynamic Disk Guard: If free disk < 5GB and an upload is active, wait for it
+                if get_free_disk_gb() < 5.0 and current_upload_task and not current_upload_task.done():
+                    logger.info("Free disk < 5GB. Pausing next chunk download until current upload clears disk.")
+                    await current_upload_task
+                    if prev_chunk_dir:
+                        remove_path(prev_chunk_dir)
+                        prev_chunk_dir = None
+
+                # 2. Download Chunk chunk_idx
+                chunk_dir = DOWNLOAD_DIR / f"album_{batch.batch_id}_chunk_{chunk_idx}"
+                chunk_dir.mkdir(parents=True, exist_ok=True)
+                downloaded_items = []
+
+                for item_idx, url in enumerate(chunk_urls):
+                    if batch.cancel_event.is_set():
+                        break
+
+                    current_dl_info = {
+                        "file_name": "Resolving stream...",
+                        "current": 0,
+                        "total": 0,
+                        "speed_str": "--",
+                        "eta_str": "--",
+                        "item_num": item_idx + 1,
+                        "chunk_total": len(chunk_urls)
+                    }
+                    await refresh_dashboard(force=True)
+
+                    try:
+                        media_info = await extract_media_link(url)
+                        if not media_info or not media_info.get("url"):
+                            raise RuntimeError("Could not resolve video stream from page.")
+
+                        if batch.cancel_event.is_set():
+                            raise asyncio.CancelledError()
+
+                        stream_url = media_info["url"]
+                        stream_type = media_info.get("type", "direct")
+                        title = media_info.get("title") or derive_filename(stream_url)
+                        if title.lower() in ("master.mp4", "extracted_media.mp4", "download.mp4", "video.mp4", "browser_media.mp4", "stream_video.mp4", "playlist.m3u8"):
+                            url_slug = [p for p in urlparse(url).path.split("/") if p and p not in ("v", "e", "d", "f", "watch", "file")]
+                            if url_slug:
+                                clean_slug = re.sub(r"[^\w\s\.\-]", "", url_slug[-1]).strip()
+                                if clean_slug:
+                                    title = f"{clean_slug}.mp4"
+
+                        headers = media_info.get("headers", {})
+                        target_path = chunk_dir / f"{item_idx + 1:02d}_{title}"
+                        start_dl_time = time.time()
+
+                        async def dl_progress(current, total):
+                            if batch.cancel_event.is_set():
+                                raise asyncio.CancelledError()
+                            nonlocal current_dl_info
+                            now = time.time()
+                            elapsed = now - start_dl_time
+                            sp_str = "--"
+                            et_str = "--"
+                            if elapsed > 0 and current > 0:
+                                sp = current / elapsed
+                                sp_str = f"{format_size(int(sp))}/s"
+                                if total > current:
+                                    et_str = format_time((total - current) / sp)
+                            current_dl_info = {
+                                "file_name": title,
+                                "current": current,
+                                "total": total,
+                                "speed_str": sp_str,
+                                "eta_str": et_str,
+                                "item_num": item_idx + 1,
+                                "chunk_total": len(chunk_urls)
+                            }
+                            await refresh_dashboard()
+
+                        if stream_type == "m3u8":
+                            dl_file = await download_m3u8_stream(
+                                m3u8_url=stream_url,
+                                target_path=target_path.with_suffix(".mp4"),
+                                headers=headers,
+                                progress_callback=dl_progress,
+                                cancel_event=batch.cancel_event
+                            )
+                        else:
+                            dl_file = await download_direct_stream(
+                                url=stream_url,
+                                target_path=target_path,
+                                headers=headers,
+                                progress_callback=dl_progress,
+                                cancel_event=batch.cancel_event
+                            )
+
+                        caption = user_settings.get("custom_caption") or f"🎬 `{dl_file.name}`"
+                        downloaded_items.append((dl_file, caption))
+                        batch.done_count += 1
+
+                    except asyncio.CancelledError:
+                        batch.cancelled_count += 1
+                        break
+                    except Exception as e:
+                        logger.error(f"Failed to process {url} in album batch: {e}")
+                        batch.failed_count += 1
+                        batch.failed_urls.append((url, str(e)))
+                    finally:
+                        completed_files += 1
+
+                current_dl_info = None
+                await refresh_dashboard(force=True)
+
+                if batch.cancel_event.is_set():
+                    break
+
+                # 3. If previous upload is still running, wait for it before launching next upload
+                if current_upload_task:
+                    await current_upload_task
+                    if prev_chunk_dir:
+                        remove_path(prev_chunk_dir)
+                        prev_chunk_dir = None
+
+                # 4. Launch concurrent upload of this chunk (pipelined)
+                if downloaded_items:
+                    async def run_chunk_upload(items, alb_idx, c_dir):
+                        nonlocal current_up_info, uploaded_albums
+                        current_up_info = {
+                            "album_num": alb_idx + 1,
+                            "count": len(items),
+                            "status": "Transmitting video album to Telegram..."
+                        }
+                        await refresh_dashboard(force=True)
+                        try:
+                            await upload_video_albums(
+                                client=client,
+                                chat_id=batch.chat_id,
+                                video_items=items,
+                                custom_thumb=user_settings.get("custom_thumb"),
+                                chunk_size=10
+                            )
+                            uploaded_albums += 1
+                        except Exception as ex:
+                            logger.error(f"Error uploading video album {alb_idx + 1}: {ex}")
+                        finally:
+                            current_up_info = None
+                            remove_path(c_dir)
+                            await refresh_dashboard(force=True)
+
+                    prev_chunk_dir = chunk_dir
+                    current_upload_task = asyncio.create_task(
+                        run_chunk_upload(downloaded_items, chunk_idx, chunk_dir)
+                    )
+                else:
+                    remove_path(chunk_dir)
+
+            # Wait for final upload to complete
+            if current_upload_task:
+                await current_upload_task
+                if prev_chunk_dir:
+                    remove_path(prev_chunk_dir)
+                    prev_chunk_dir = None
+
+        finally:
+            # Decrement user task load
+            curr_load = self._user_task_counts.get(batch.user_id, 0)
+            self._user_task_counts[batch.user_id] = max(0, curr_load - total_files)
+
+            # Clean any remaining temp directories for this batch
+            for p in DOWNLOAD_DIR.glob(f"album_{batch.batch_id}_*"):
+                remove_path(p)
+
+            # Finish dashboard message
+            if batch.cancel_event.is_set():
+                try:
+                    await client.edit_message_text(
+                        chat_id=batch.chat_id,
+                        message_id=status_msg_id,
+                        text=f"🚫 **Album Batch Cancelled by user.**\nBatch ID: `{batch.batch_id[:8]}`"
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    await client.delete_messages(chat_id=batch.chat_id, message_ids=status_msg_id)
+                except Exception:
+                    pass
+
+            await self._send_batch_summary(client, batch)
+
     async def _send_batch_summary(self, client, batch: BatchInfo):
         # If everything finished cleanly with no failures, keep chat clean (no summary spam)
         if batch.failed_count == 0 and batch.cancelled_count == 0:
             self.batches.pop(batch.batch_id, None)
             return
 
-        summary_lines = [
+        header = [
             "🏁 **Batch Processing Report:**",
             f"✅ **Finished:** {batch.done_count}",
             f"❌ **Failed:** {batch.failed_count}",
             f"🚫 **Cancelled:** {batch.cancelled_count}"
         ]
 
-        if batch.failed_urls:
-            summary_lines.append("\n**Failed Links:**")
-            for url, err in batch.failed_urls:
-                summary_lines.append(f"• `{url}` — *{err[:50]}*")
+        messages_to_send = []
+        current_chunk = list(header)
+        current_length = sum(len(line) + 1 for line in current_chunk)
 
-        try:
-            await client.send_message(
-                chat_id=batch.chat_id,
-                text="\n".join(summary_lines)
-            )
-        except Exception as e:
-            logger.error(f"Failed to send batch summary for {batch.batch_id}: {e}")
-        finally:
-            self.batches.pop(batch.batch_id, None)
+        if batch.failed_urls:
+            current_chunk.append("\n**Failed Links:**")
+            current_length += 16
+            for url, err in batch.failed_urls:
+                err_clean = str(err).replace("\n", " ")[:60]
+                line = f"• `{url}` — *{err_clean}*"
+                if current_length + len(line) + 1 > 3500:
+                    messages_to_send.append("\n".join(current_chunk))
+                    current_chunk = [f"**Failed Links (Continued):**\n{line}"]
+                    current_length = len(current_chunk[0])
+                else:
+                    current_chunk.append(line)
+                    current_length += len(line) + 1
+
+        if current_chunk:
+            messages_to_send.append("\n".join(current_chunk))
+
+        for msg_text in messages_to_send:
+            try:
+                await client.send_message(
+                    chat_id=batch.chat_id,
+                    text=msg_text
+                )
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.error(f"Failed to send batch summary chunk for {batch.batch_id}: {e}")
+
+        self.batches.pop(batch.batch_id, None)
 
 
 # Global singleton instance

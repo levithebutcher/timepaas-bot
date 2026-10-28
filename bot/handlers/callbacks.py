@@ -39,6 +39,21 @@ async def callback_handler(client: Client, callback: CallbackQuery):
             await callback.answer("Task is already finished or cannot be cancelled.", show_alert=True)
         return
 
+    if data.startswith("cancel_batch:"):
+        batch_id = data.split(":", 1)[1]
+        success = queue_manager.cancel_batch(batch_id)
+        if success:
+            await callback.answer("🛑 Album batch cancelled.", show_alert=False)
+            try:
+                await callback.message.edit_text(
+                    f"🚫 **Album Batch Cancelled by user.**\nBatch ID: `{batch_id[:8]}`"
+                )
+            except Exception:
+                pass
+        else:
+            await callback.answer("Album batch is already finished or cannot be cancelled.", show_alert=True)
+        return
+
     if data.startswith("zipchoice:"):
         parts = data.split(":")
         if len(parts) == 3:

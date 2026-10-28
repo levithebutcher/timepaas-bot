@@ -33,6 +33,15 @@ def check_free_disk_space(required_gb: float = MIN_FREE_DISK_GB) -> bool:
         return True
 
 
+def get_free_disk_gb() -> float:
+    """Returns the current free disk space in Gigabytes."""
+    try:
+        usage = shutil.disk_usage(DOWNLOAD_DIR)
+        return usage.free / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
 def remove_path(path: Path):
     """Safely removes a file or directory tree."""
     if not path:
