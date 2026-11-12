@@ -23,7 +23,12 @@ DOOD_DOMAINS = {
 
 MIXDROP_DOMAINS = {
     "mixdrop.co", "mixdrop.to", "mixdrop.sx", "mixdrop.bz",
-    "mixdrop.ch", "mixdrop.ag", "mixdrop.vc"
+    "mixdrop.ch", "mixdrop.ag", "mixdrop.vc", "mixdrop.club",
+    "mixdrop.pe", "mixdrop.is", "mxdrop.click", "mxdrop.to"
+}
+
+ARCHIVEBATE_DOMAINS = {
+    "archivebate.com", "www.archivebate.com"
 }
 
 STREAMWISH_DOMAINS = {
@@ -314,31 +319,100 @@ async def resolve_doodstream(url: str) -> dict:
 
 
 async def resolve_mixdrop(url: str) -> dict:
-    """Extracts direct video URL from Mixdrop."""
+    """Extracts direct video URL from Mixdrop (including Dean Edwards packed JS)."""
     headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": "https://mixdrop.co/"}
     try:
         clean_url = url.replace("/f/", "/e/")
         timeout = aiohttp.ClientTimeout(total=20)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.get(clean_url) as resp:
+            async with session.get(clean_url, allow_redirects=True) as resp:
                 if resp.status != 200:
                     return None
                 html = await resp.text()
 
-        # Find MDCore.wurl or direct stream assignment
-        match = re.search(r'(?:MDCore\.wurl|MDCore\.vurl)\s*=\s*["\']([^"\']+)["\']', html)
+        unpacked = unpack_dean_edwards(html) or html
+
+        # Find MDCore.wurl, MDCore.vurl or direct stream assignment
+        match = re.search(r'(?:MDCore\.wurl|MDCore\.vurl|wurl|vurl)\s*=\s*["\']([^"\']+)["\']', unpacked)
         if match:
             stream_url = match.group(1)
             if stream_url.startswith("//"):
                 stream_url = "https:" + stream_url
+
+            # Extract clean video filename if present in MDCore.vfile or page title
+            fn_match = re.search(r'MDCore\.vfile\s*=\s*["\']([^"\']+)["\']', unpacked)
+            title = fn_match.group(1) if fn_match else "mixdrop_video.mp4"
+            if not title.lower().endswith(".mp4"):
+                title += ".mp4"
+
             return {
                 "type": "direct",
                 "url": stream_url,
-                "title": "mixdrop_video.mp4",
+                "title": title,
                 "headers": headers
             }
     except Exception as e:
         logger.debug(f"Mixdrop extraction failed for {url}: {e}")
+    return None
+
+
+async def resolve_archivebate(url: str) -> dict:
+    """
+    Tier-0 Extractor for Archivebate (https://www.archivebate.com/).
+    Extracts underlying media host (e.g. Mixdrop) from the download form and iframes,
+    then automatically decrypts and returns the direct video stream.
+    """
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": "https://www.archivebate.com/"
+    }
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+
+        # Extract title
+        title = "archivebate_video.mp4"
+        title_m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+        if title_m:
+            raw_title = title_m.group(1).split("webcam recordings")[0].strip(" ,-|")
+            if not raw_title:
+                raw_title = title_m.group(1).split("|")[0].strip()
+            if raw_title:
+                clean_title = re.sub(r'[^\w\s\.\-]', '', raw_title).strip().replace(" ", "_")
+                if clean_title:
+                    title = f"{clean_title}.mp4"
+
+        # 1. Search for fid input in download form
+        embedded_url = None
+        fid_match = re.search(r'name=[\'"]fid[\'"][^>]*value=[\'"]([^\'"]+)[\'"]', html)
+        if fid_match:
+            embedded_url = fid_match.group(1).strip()
+
+        # 2. Search for iframe src pointing to video hosts
+        if not embedded_url:
+            ifr_matches = re.findall(r'<iframe[^>]*src=[\'"]([^\'"]+)[\'"]', html)
+            for ifr in ifr_matches:
+                if any(dh in ifr.lower() for dh in ("mixdrop", "mxdrop", "streamtape", "strtape", "dood", "streamwish", "filelions", "vidara")):
+                    embedded_url = ifr.strip()
+                    break
+            if not embedded_url and ifr_matches:
+                embedded_url = ifr_matches[0].strip()
+
+        if embedded_url:
+            logger.info(f"Archivebate resolved underlying host: {embedded_url}")
+            host_res = await extract_from_video_hosts(embedded_url)
+            if host_res and host_res.get("url"):
+                if title and title != "archivebate_video.mp4":
+                    host_res["title"] = title
+                return host_res
+
+    except Exception as e:
+        logger.warning(f"Archivebate extraction failed for {url}: {e}")
+
     return None
 
 
@@ -545,5 +619,9 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_matching_host(netloc, VIDARA_DOMAINS):
         logger.info(f"Target recognized as Vidara/Gasobni: {url}")
         return await resolve_vidara(url)
+
+    if is_matching_host(netloc, ARCHIVEBATE_DOMAINS):
+        logger.info(f"Target recognized as Archivebate: {url}")
+        return await resolve_archivebate(url)
 
     return None

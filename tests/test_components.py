@@ -103,6 +103,15 @@ class TestComponents(unittest.TestCase):
         self.assertTrue(is_matching_host("sub.vidara.so", VIDARA_DOMAINS))
         self.assertFalse(is_matching_host("othersite.com", VIDARA_DOMAINS))
 
+    def test_archivebate_and_mixdrop_domain_matching(self):
+        from bot.extractors.video_hosts import is_matching_host, ARCHIVEBATE_DOMAINS, MIXDROP_DOMAINS
+        self.assertTrue(is_matching_host("archivebate.com", ARCHIVEBATE_DOMAINS))
+        self.assertTrue(is_matching_host("www.archivebate.com", ARCHIVEBATE_DOMAINS))
+        self.assertTrue(is_matching_host("mixdrop.ag", MIXDROP_DOMAINS))
+        self.assertTrue(is_matching_host("mxdrop.click", MIXDROP_DOMAINS))
+        self.assertTrue(is_matching_host("mixdrop.co", MIXDROP_DOMAINS))
+        self.assertFalse(is_matching_host("randomsite.com", ARCHIVEBATE_DOMAINS))
+
     def test_input_media_video_stub(self):
         from bot.core.uploader import InputMediaVideo
         imv = InputMediaVideo(media="video.mp4", duration=10, width=1280, height=720)

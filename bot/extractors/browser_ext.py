@@ -122,6 +122,31 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
             except Exception:
                 pass
 
+            # Dismiss 18+ age verification or warning overlays if present
+            try:
+                verification = await page.query_selector("#verification, .verification, #age-gate, .age-gate")
+                if verification:
+                    btn = await verification.query_selector("button, a.btn, .btn")
+                    if btn:
+                        await btn.click(timeout=1500)
+                        await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+            # Check for embedded iframes pointing to video hosts
+            try:
+                iframes = await page.eval_on_selector_all("iframe", "els => els.map(e => e.src)")
+                for ifr_src in iframes:
+                    if ifr_src:
+                        from bot.extractors.video_hosts import extract_from_video_hosts
+                        host_res = await extract_from_video_hosts(ifr_src)
+                        if host_res and host_res.get("url"):
+                            logger.info(f"Playwright detected embedded video host iframe: {ifr_src}")
+                            await browser.close()
+                            return host_res
+            except Exception:
+                pass
+
             # Check if a video element with a source already exists in the DOM
             try:
                 dom_video_src = await page.evaluate("""() => {

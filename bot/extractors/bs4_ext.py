@@ -115,8 +115,15 @@ async def extract_with_bs4(url: str) -> dict:
                 form_data = {}
                 for inp in form.find_all("input"):
                     name = inp.get("name")
+                    val = inp.get("value", "")
                     if name:
-                        form_data[name] = inp.get("value", "")
+                        form_data[name] = val
+                    if val.startswith("http://") or val.startswith("https://"):
+                        from bot.extractors.video_hosts import extract_from_video_hosts
+                        host_res = await extract_from_video_hosts(val)
+                        if host_res and host_res.get("url"):
+                            logger.info(f"BS4 extracted video host URL directly from form input: {val}")
+                            return host_res
                 download_candidates.append((method, target_url, form_data))
 
         # Sniff top candidate download buttons (max 3) with fast HTTP request to follow redirects
@@ -127,6 +134,16 @@ async def extract_with_bs4(url: str) -> dict:
                 req_coro = session.post(cand_url, data=data, **req_kwargs) if method == "POST" else session.get(cand_url, **req_kwargs)
                 async with req_coro as cand_resp:
                     if cand_resp.status in (200, 206):
+                        final_url = str(cand_resp.url)
+                        clean_final_path = urlparse(final_url).path.lower()
+
+                        # Check if redirected to a specialized video host
+                        from bot.extractors.video_hosts import extract_from_video_hosts
+                        host_res = await extract_from_video_hosts(final_url)
+                        if host_res and host_res.get("url"):
+                            logger.info(f"BS4 download redirect reached video host: {final_url}")
+                            return host_res
+
                         c_disp = cand_resp.headers.get("Content-Disposition", "")
                         c_type = cand_resp.headers.get("Content-Type", "").lower()
                         c_len = cand_resp.headers.get("Content-Length")
