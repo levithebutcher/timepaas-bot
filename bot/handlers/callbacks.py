@@ -24,6 +24,24 @@ async def callback_handler(client: Client, callback: CallbackQuery):
         await callback.answer("⛔ Access denied.", show_alert=True)
         return
 
+    if data.startswith("hud:"):
+        # Interactive telemetry toast responses (Telegram Bot Widget HUD)
+        if data.startswith("hud:speed:"):
+            await callback.answer("⚡ Multi-stream acceleration & live transfer rate active.", show_alert=False)
+        elif data.startswith("hud:eta:"):
+            await callback.answer("⏱ Estimated time remaining based on current throughput.", show_alert=False)
+        elif data.startswith("hud:size:"):
+            await callback.answer("💾 Downloaded payload size / Total stream file size.", show_alert=False)
+        elif data.startswith("hud:batch_prog:"):
+            await callback.answer("📊 Pipeline completion progress across all queued album items.", show_alert=False)
+        elif data.startswith("hud:batch_disk:"):
+            await callback.answer("💾 Free host disk buffer space remaining for active pipeline.", show_alert=False)
+        elif data.startswith("hud:batch_albs:"):
+            await callback.answer("🎞 Telegram Media Group video packs delivered to chat.", show_alert=False)
+        else:
+            await callback.answer("ℹ️ Telemetry Widget active.", show_alert=False)
+        return
+
     if data.startswith("cancel:"):
         task_id = data.split(":", 1)[1]
         success = queue_manager.cancel_task(task_id)

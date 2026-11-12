@@ -39,16 +39,22 @@ async def start_handler(client: Client, message: Message):
         return
 
     text = (
-        "👋 **Welcome to Timepass Leech & Video Downloader Bot!**\n\n"
-        "Send me any webpage URL or video link, and I will extract, download, "
-        "and upload it to Telegram (up to 2GB)!\n\n"
-        "⚡ **Features:**\n"
-        "• **Multi-Link Support:** Send up to 10 links in one message.\n"
-        "• **Smart Extractor:** yt-dlp, HTML video tags, and Playwright sniffer.\n"
-        "• **ZIP & Archive Support:** Auto-extracts videos & photos from archives.\n"
-        "• **High Speed:** Resumable chunk downloads with real-time status bars.\n"
-        "• **2GB Uploads:** Video player format with thumbnails & duration.\n\n"
-        "Type /help to see all available commands."
+        "╭─────────────────────────────────────╮\n"
+        "│  ⚡ TIMEPASS LEECH & DOWNLOADER BOT │\n"
+        "╰─────────────────────────────────────╯\n"
+        "╭─ 🌟 ULTRA-PREMIUM FEATURES\n"
+        "│ • 🚀 Multi-Stream Ingress (Aria2 8-conn)\n"
+        "│ • 🎬 Double-Buffered Album Pipelining\n"
+        "│ • 🧠 Hybrid Headless + DOM Decryption\n"
+        "│ • 📦 Auto-Extract ZIP / RAR Archives\n"
+        "│ • ✂️ Auto-Split Videos > 1.95 GB\n"
+        "│ • 🎛 Real-time Smooth 8-Level Fractional HUD\n"
+        "╰─────────────────────────────────────\n"
+        "╭─ 💡 QUICK START\n"
+        "│ 🔗 Send video links directly, or\n"
+        "│ 🎞 Send `/album <links>` for Video Album mode\n"
+        "│ 📖 Send `/help` for all commands\n"
+        "╰─────────────────────────────────────"
     )
     await message.reply_text(text)
 
@@ -59,15 +65,24 @@ async def help_handler(client: Client, message: Message):
         return
 
     text = (
-        "📖 **Commands & Usage Guide:**\n\n"
-        "• **Direct Links:** Paste URLs (one per line) or reply to links for individual video uploads.\n"
-        "• `/album <urls>` - Download and group multiple videos into a Telegram **Video Album** (up to 10 videos per album).\n"
-        "• `/status` - Check currently active and queued tasks.\n"
-        "• `/cancelall` - Cancel all your pending and active downloads.\n"
-        "• `/setthumb` - Reply to an image to set your custom video thumbnail.\n"
-        "• `/clearthumb` - Clear custom thumbnail and revert to auto-generated thumbs.\n"
-        "• `/setcaption <text>` - Set custom caption template (e.g. `/setcaption Downloaded via Bot`).\n\n"
-        "💡 **Tip:** Each download gets its own inline **Cancel** button."
+        "╭─────────────────────────────────────╮\n"
+        "│    📖  C O M M A N D   G U I D E    │\n"
+        "╰─────────────────────────────────────╯\n"
+        "╭─ 🎮 CORE COMMANDS\n"
+        "│ • `<urls>` - Direct Leech (Individual Players)\n"
+        "│ • `/album <urls>` - Pipelined Video Album (10-packs)\n"
+        "│ • `/status` - Live Queue & Active Tasks HUD\n"
+        "│ • `/cancelall` - Cancel all your active tasks\n"
+        "╰─────────────────────────────────────\n"
+        "╭─ 🎨 CUSTOMIZATION\n"
+        "│ • `/setthumb` - Reply to image to set thumbnail\n"
+        "│ • `/clearthumb` - Clear thumbnail (auto-generate)\n"
+        "│ • `/setcaption <text>` - Custom video caption\n"
+        "╰─────────────────────────────────────\n"
+        "╭─ 💡 PRO TIPS\n"
+        "│ ⚡ Click HUD badges to view live telemetry toasts!\n"
+        "│ 🛑 Use the inline cancel button anytime.\n"
+        "╰─────────────────────────────────────"
     )
     await message.reply_text(text)
 
@@ -79,14 +94,27 @@ async def status_handler(client: Client, message: Message):
 
     active_tasks = [t for t in queue_manager.tasks.values() if t.status not in ("Done", "Failed", "Cancelled")]
     if not active_tasks:
-        await message.reply_text("📭 No active or queued tasks right now.")
+        await message.reply_text(
+            "╭─────────────────────────────────────╮\n"
+            "│   📭  N O   A C T I V E   T A S K S │\n"
+            "╰─────────────────────────────────────╯\n"
+            "All queues are clear. Send links to start downloading!"
+        )
         return
 
-    lines = [f"📊 **Active & Queued Tasks ({len(active_tasks)}):**\n"]
+    lines = [
+        "╭─────────────────────────────────────╮",
+        "│     📊  A C T I V E   Q U E U E     │",
+        "╰─────────────────────────────────────╯"
+    ]
     for idx, t in enumerate(active_tasks[:15], 1):
-        lines.append(f"{idx}. `[{t.id[:8]}]` **State:** {t.status}\n🔗 `{t.url[:45]}...`")
+        lines.append(
+            f"╭─ [{idx:02d}] 🆔 `{t.id[:8]}` • State: {t.status}\n"
+            f"│ 🔗 `{t.url[:45]}...`\n"
+            f"╰─────────────────────────────────────"
+        )
 
-    await message.reply_text("\n\n".join(lines))
+    await message.reply_text("\n".join(lines))
 
 
 @Client.on_message(filters.command("cancelall") & filters.private)

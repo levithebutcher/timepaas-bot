@@ -86,15 +86,20 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
     if is_album:
         batch_id = str(uuid.uuid4())
         status_text = (
-            f"🎬 **[ALBUM PIPELINE INITIALIZING]** ➔ `[{batch_id[:8]}]`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📦 **Accepted:** {len(clean_urls)} video link(s)\n"
-            f"🔢 **Order:** Sequenced & chunked into 10-video packs\n"
-            f"⏳ *Starting Double-Buffered Download/Upload Pipeline...*\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"╭─────────────────────────────────────╮\n"
+            f"│   🎬  A L B U M   P I P E L I N E   │\n"
+            f"╰─────────────────────────────────────╯\n"
+            f"╭─ 📦 INGESTION BATCH\n"
+            f"│ 🆔 Batch: `{batch_id[:8]}` • 🎞 *Video Album*\n"
+            f"│ 🔢 Items: {len(clean_urls)} video links accepted\n"
+            f"│ 🗂 Chunking: Auto-sequenced into 10-packs\n"
+            f"╰─────────────────────────────────────\n"
+            f"╭─ ⚙️ ENGINE STATUS\n"
+            f"│ ⏳ *Starting Double-Buffered Download/Upload Pipeline...*\n"
+            f"╰─────────────────────────────────────"
         )
         reply_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✖ Cancel Entire Album", callback_data=f"cancel_batch:{batch_id}")]
+            [InlineKeyboardButton("🛑 Cancel Entire Album", callback_data=f"cancel_batch:{batch_id}")]
         ]) if InlineKeyboardMarkup and InlineKeyboardButton else None
 
         status_msg = await message.reply_text(status_text, reply_markup=reply_markup)
@@ -136,16 +141,20 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
         task_id = str(uuid.uuid4())
 
         reply_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✖ Cancel Task", callback_data=f"cancel:{task_id}")]
+            [InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel:{task_id}")]
         ]) if InlineKeyboardMarkup and InlineKeyboardButton else None
 
         status_text = (
-            f"⚡ **DIRECT LEECH** ➔ `[{task_id[:8]}]`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔗 **Link:** `{url[:45]}...`\n"
-            f"🔄 **Type:** *Individual Video Player*\n"
-            f"⏳ **Status:** <i>Waiting for worker slot in queue...</i>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"╭─────────────────────────────────────╮\n"
+            f"│   ⚡  T I M E P A S S   L E E C H   │\n"
+            f"╰─────────────────────────────────────╯\n"
+            f"╭─ 📂 MEDIA TARGET\n"
+            f"│ 🔗 Link: `{url[:45]}...`\n"
+            f"│ 🆔 Task: `{task_id[:8]}` • 🎥 *Video Player*\n"
+            f"╰─────────────────────────────────────\n"
+            f"╭─ ⚙️ ENGINE STATUS\n"
+            f"│ ⏳ <i>Waiting for worker slot in queue...</i>\n"
+            f"╰─────────────────────────────────────"
         )
 
         status_msg = await message.reply_text(

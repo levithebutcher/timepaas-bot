@@ -357,6 +357,9 @@ class QueueManager:
                     return
 
             # Step 4: Video Splitting Check (> 1.95 GB)
+            if not downloaded_file.exists():
+                raise FileNotFoundError(f"Downloaded media file not found: {downloaded_file.name}")
+
             parts_to_upload = [downloaded_file]
             if downloaded_file.stat().st_size > MAX_SPLIT_SIZE_BYTES:
                 task.status = "Splitting"
@@ -373,24 +376,27 @@ class QueueManager:
             batch = self.batches.get(task.batch_id)
             if batch and batch.is_album:
                 task.status = "Ready for Album"
-                caption = user_settings.get("custom_caption") or f"🎬 `{downloaded_file.name}`"
+                file_size = downloaded_file.stat().st_size if downloaded_file.exists() else 0
+                file_name = downloaded_file.name
+                caption = user_settings.get("custom_caption") or f"🎬 `{file_name}`"
                 album_dir = DOWNLOAD_DIR / f"album_{batch.batch_id}"
                 album_dir.mkdir(parents=True, exist_ok=True)
                 for part in parts_to_upload:
                     dest_path = album_dir / part.name
                     if dest_path.exists():
                         dest_path = album_dir / f"{task.id[:6]}_{part.name}"
-                    shutil.move(str(part), str(dest_path))
-                    batch.album_ready_items.append((dest_path, caption, task.status_msg_id))
+                    if part.exists():
+                        shutil.move(str(part), str(dest_path))
+                        batch.album_ready_items.append((dest_path, caption, task.status_msg_id))
                 await update_status_message(
                     client=client,
                     chat_id=task.chat_id,
                     message_id=task.status_msg_id,
                     task_id=task.id,
                     action="✅ Download Complete! ⏳ Bundling into Video Album...",
-                    current=downloaded_file.stat().st_size,
-                    total=downloaded_file.stat().st_size,
-                    file_name=downloaded_file.name,
+                    current=file_size,
+                    total=file_size,
+                    file_name=file_name,
                     is_album=True,
                     force=True
                 )

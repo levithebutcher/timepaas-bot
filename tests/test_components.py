@@ -276,6 +276,61 @@ class TestComponents(unittest.TestCase):
         self.assertIn("Episode_02.mp4", edited_texts[0])
         self.assertIn("12.50 MB/s", edited_texts[0])
         self.assertIn("15.00 MB/s", edited_texts[0])
+        self.assertIn("╭─", edited_texts[0])
+        self.assertIn("╰─", edited_texts[0])
+
+    def test_generate_smooth_bar(self):
+        from bot.core.progress import generate_smooth_bar
+        bar_0 = generate_smooth_bar(0, 100, length=10)
+        self.assertIn("0.0%", bar_0)
+        self.assertEqual(bar_0.count("░"), 10)
+
+        bar_50 = generate_smooth_bar(50, 100, length=10)
+        self.assertIn("50.0%", bar_50)
+        self.assertIn("█" * 5, bar_50)
+
+        bar_100 = generate_smooth_bar(100, 100, length=10)
+        self.assertIn("100.0%", bar_100)
+        self.assertEqual(bar_100.count("█"), 10)
+
+        # Fractional 73% should have fractional sub-block character
+        bar_73 = generate_smooth_bar(73, 100, length=10)
+        self.assertIn("73.0%", bar_73)
+        self.assertIn("█" * 7, bar_73)
+
+    def test_update_status_message_curved_widget(self):
+        import asyncio
+        from bot.core.progress import update_status_message
+
+        edited_texts = []
+        markups = []
+
+        class MockClient:
+            async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+                edited_texts.append(text)
+                markups.append(reply_markup)
+                return True
+
+        async def run():
+            await update_status_message(
+                client=MockClient(),
+                chat_id=111,
+                message_id=222,
+                task_id="task_widget_test",
+                action="📥 Downloading media stream...",
+                current=50 * 1024 * 1024,
+                total=100 * 1024 * 1024,
+                file_name="TestVideo.mp4",
+                is_album=False,
+                force=True
+            )
+
+        asyncio.run(run())
+        self.assertEqual(len(edited_texts), 1)
+        self.assertIn("╭─", edited_texts[0])
+        self.assertIn("╰─", edited_texts[0])
+        self.assertIn("TestVideo.mp4", edited_texts[0])
+        self.assertIsNotNone(markups[0])
 
 
 if __name__ == "__main__":

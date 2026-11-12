@@ -9,8 +9,13 @@ except ImportError:
         value = 0
     class MessageNotModified(Exception):
         pass
-    InlineKeyboardMarkup = None
-    InlineKeyboardButton = None
+    class InlineKeyboardButton:
+        def __init__(self, text="", callback_data=""):
+            self.text = text
+            self.callback_data = callback_data
+    class InlineKeyboardMarkup:
+        def __init__(self, inline_keyboard=None):
+            self.inline_keyboard = inline_keyboard or []
 from bot.config import PROGRESS_UPDATE_INTERVAL
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,41 @@ def format_time(seconds: float) -> str:
     if h > 0:
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
+
+
+def generate_smooth_bar(
+    current: int,
+    total: int,
+    length: int = 10,
+    filled_char: str = "█",
+    empty_char: str = "░"
+) -> str:
+    """
+    High-Precision 8-Level Fractional Unicode Progress Bar.
+    Renders sub-block characters [░, ▏, ▎, ▍, ▌, ▋, ▊, ▉, █] for ultra-smooth 1% progression.
+    e.g. [███████▎░░] 73.2%
+    """
+    if length < 1:
+        length = 10
+
+    if not total or total <= 0:
+        return f"{empty_char * length} 0.0%"
+
+    fraction = min(max(current / total, 0.0), 1.0)
+    percent = fraction * 100
+    if fraction >= 1.0:
+        return f"{filled_char * length} 100.0%"
+
+    sub_blocks = [empty_char, "▏", "▎", "▍", "▌", "▋", "▊", "▉"]
+    total_sub_units = int(fraction * length * 8)
+    full_blocks = total_sub_units // 8
+    sub_index = total_sub_units % 8
+
+    bar = filled_char * full_blocks
+    if full_blocks < length:
+        bar += sub_blocks[sub_index]
+        bar += empty_char * (length - full_blocks - 1)
+    return f"{bar} {percent:.1f}%"
 
 
 def generate_bar(
@@ -113,7 +153,7 @@ async def update_status_message(
                 eta = (total - current) / speed
                 eta_str = format_time(eta)
 
-    bar = generate_bar(current, total)
+    smooth_bar = generate_smooth_bar(current, total, length=10)
     curr_str = format_size(current)
     total_str = format_size(total) if total > 0 else "Unknown"
 
@@ -123,33 +163,55 @@ async def update_status_message(
 
     if is_album:
         text = (
-            f"🎬 **VIDEO ALBUM QUEUE** ➔ `[{task_id[:8]}]`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📂 **Item:** `{display_name}`\n"
-            f"📊 **Progress:** `{bar}`\n"
-            f"💾 **Size:** `{curr_str}` / `{total_str}`\n"
-            f"⚡ **Speed:** `{speed_str}`\n"
-            f"⏱ **ETA:** `{eta_str}` • **Elapsed:** `{elapsed_str}`\n"
-            f"🎞 **Album Stage:** {action}\n"
-            f"ℹ️ *Will be grouped and posted as a Video Album.*\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"╭─────────────────────────────────────╮\n"
+            f"│   🎬  V I D E O   A L B U M   H U D  │\n"
+            f"╰─────────────────────────────────────╯\n"
+            f"╭─ 📂 ITEM IDENTIFIER\n"
+            f"│ 🏷 Name: `{display_name}`\n"
+            f"│ 🆔 Task: `{task_id[:8]}` • 🎞 *Album Mode*\n"
+            f"╰─────────────────────────────────────\n"
+            f"╭─ 📈 REAL-TIME PROGRESSION\n"
+            f"│ 📊 `{smooth_bar}`\n"
+            f"│ 💾 `{curr_str}` / `{total_str}`\n"
+            f"│ ⚡ `{speed_str}`  •  ⏱ ETA: `{eta_str}`\n"
+            f"╰─────────────────────────────────────\n"
+            f"╭─ ⚙️ ENGINE STATUS\n"
+            f"│ {action}\n"
+            f"╰─────────────────────────────────────"
         )
     else:
         text = (
-            f"⚡ **DIRECT LEECH** ➔ `[{task_id[:8]}]`\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📂 **File:** `{display_name}`\n"
-            f"📊 **Progress:** `{bar}`\n"
-            f"💾 **Size:** `{curr_str}` / `{total_str}`\n"
-            f"⚡ **Speed:** `{speed_str}`\n"
-            f"⏱ **ETA:** `{eta_str}` • **Elapsed:** `{elapsed_str}`\n"
-            f"🔄 **Status:** {action}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"╭─────────────────────────────────────╮\n"
+            f"│   ⚡  T I M E P A S S   L E E C H   │\n"
+            f"╰─────────────────────────────────────╯\n"
+            f"╭─ 📂 MEDIA TARGET\n"
+            f"│ 🏷 Name: `{display_name}`\n"
+            f"│ 🆔 Task: `{task_id[:8]}` • 🎥 *Video Player*\n"
+            f"╰─────────────────────────────────────\n"
+            f"╭─ 📈 REAL-TIME TRANSMISSION\n"
+            f"│ 📊 `{smooth_bar}`\n"
+            f"│ 💾 `{curr_str}` / `{total_str}`\n"
+            f"│ ⚡ `{speed_str}`  •  ⏱ ETA: `{eta_str}`\n"
+            f"╰─────────────────────────────────────\n"
+            f"╭─ ⚙️ ACTIVE PROCESS\n"
+            f"│ {action}\n"
+            f"╰─────────────────────────────────────"
         )
 
-    reply_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✖ Cancel Task", callback_data=f"cancel:{task_id}")]
-    ])
+    buttons = []
+    # Real-time telemetry badges
+    info_row = []
+    if speed_str and speed_str != "0 B/s":
+        info_row.append(InlineKeyboardButton(f"⚡ {speed_str}", callback_data=f"hud:speed:{task_id}"))
+    if eta_str and eta_str != "--:--":
+        info_row.append(InlineKeyboardButton(f"⏱ {eta_str}", callback_data=f"hud:eta:{task_id}"))
+    if curr_str and curr_str != "0 B":
+        info_row.append(InlineKeyboardButton(f"💾 {curr_str}", callback_data=f"hud:size:{task_id}"))
+    if info_row:
+        buttons.append(info_row)
+
+    buttons.append([InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel:{task_id}")])
+    reply_markup = InlineKeyboardMarkup(buttons) if InlineKeyboardMarkup and InlineKeyboardButton else None
 
     for attempt in range(3):
         try:
@@ -230,7 +292,7 @@ async def update_album_pipeline_dashboard(
                     cb = dl_item.get("current", 0)
                     tb = dl_item.get("total", 0)
                     sp = dl_item.get("speed_str", "--")
-                    bar = generate_bar(cb, tb, length=8)
+                    bar = generate_smooth_bar(cb, tb, length=8)
                     lines.append(f"   ▶ `{fn}`\n     `{bar}` ({format_size(cb)}) • ⚡ `{sp}`")
             else:
                 lines.append("   ⏳ <i>Finalizing pack downloads...</i>")
@@ -245,33 +307,48 @@ async def update_album_pipeline_dashboard(
             eta = current_dl.get("eta_str", "--")
             pack_idx = current_dl.get("item_num", 1)
             pack_tot = current_dl.get("chunk_total", 1)
-            bar = generate_bar(curr_b, tot_b)
+            bar = generate_smooth_bar(curr_b, tot_b, length=10)
             dl_text = (
-                f"📥 **DOWNLOADING:** Pack [{pack_idx}/{pack_tot}]\n"
-                f"   ▶ `{file_name}`\n"
-                f"   📊 `{bar}`\n"
-                f"   💾 `{format_size(curr_b)}` / `{format_size(tot_b)}` • ⚡ `{speed}` • ⏱ `{eta}`"
+                f"   ▶ `{file_name}` [Pack {pack_idx}/{pack_tot}]\n"
+                f"     `{bar}` ({format_size(curr_b)} / {format_size(tot_b)})\n"
+                f"     ⚡ `{speed}`  •  ⏱ ETA: `{eta}`"
             )
     else:
         if completed_files >= total_files and total_files > 0:
-            dl_text = "📥 **DOWNLOADING:** ✅ <i>All downloads completed!</i>"
+            dl_text = "   ✅ <i>All downloads completed!</i>"
         else:
-            dl_text = "📥 **DOWNLOADING:** <i>Preparing next chunk...</i>"
+            dl_text = "   ⏳ <i>Preparing next 10-pack chunk...</i>"
+
+    overall_pct = (completed_files / total_files * 100.0) if total_files > 0 else 0.0
+    smooth_overall = generate_smooth_bar(completed_files, total_files, length=12)
 
     text = (
-        f"🎬 **[ALBUM PIPELINE ACTIVE]** ➔ `[{batch_id[:8]}]`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{up_text}\n\n"
+        f"╭─────────────────────────────────────╮\n"
+        f"│   🎬  A L B U M   P I P E L I N E   │\n"
+        f"╰─────────────────────────────────────╯\n"
+        f"╭─ 📤 EGRESS STAGE\n"
+        f"{up_text}\n"
+        f"╰─────────────────────────────────────\n"
+        f"╭─ 📥 INGRESS STAGE\n"
         f"{dl_text}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 **Overall Status:** {completed_files}/{total_files} Files Processed • {uploaded_albums}/{total_albums} Albums Uploaded\n"
-        f"💾 **Free Disk Space:** {free_gb:.1f} GB\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"╰─────────────────────────────────────\n"
+        f"╭─ 📊 PIPELINE TELEMETRY\n"
+        f"│ 📈 `{smooth_overall}`\n"
+        f"│ • Processed: {completed_files}/{total_files} Files ({overall_pct:.1f}%)\n"
+        f"│ • Albums: {uploaded_albums}/{total_albums} Delivered to Telegram\n"
+        f"│ • Host Disk: {free_gb:.1f} GB Free • Multi-Stream: ACTIVE\n"
+        f"╰─────────────────────────────────────"
     )
 
-    reply_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✖ Cancel Entire Album", callback_data=f"cancel_batch:{batch_id}")]
-    ]) if InlineKeyboardMarkup and InlineKeyboardButton else None
+    alb_buttons = [
+        [
+            InlineKeyboardButton(f"📊 {overall_pct:.1f}% Ready", callback_data=f"hud:batch_prog:{batch_id}"),
+            InlineKeyboardButton(f"💾 {free_gb:.1f} GB Free", callback_data=f"hud:batch_disk:{batch_id}"),
+            InlineKeyboardButton(f"🎞 {uploaded_albums}/{total_albums} Albums", callback_data=f"hud:batch_albs:{batch_id}")
+        ],
+        [InlineKeyboardButton("🛑 Cancel Entire Album", callback_data=f"cancel_batch:{batch_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(alb_buttons) if InlineKeyboardMarkup and InlineKeyboardButton else None
 
     for attempt in range(3):
         try:

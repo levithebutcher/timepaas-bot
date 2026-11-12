@@ -134,8 +134,7 @@ async def ensure_video_has_audio(file_path: Path) -> Path:
         )
         await proc.communicate()
         if proc.returncode == 0 and temp_fixed.exists() and temp_fixed.stat().st_size > 0:
-            file_path.unlink(missing_ok=True)
-            temp_fixed.rename(file_path)
+            os.replace(temp_fixed, file_path)
             logger.info(f"Injected silent audio track into {file_path.name} to prevent GIF rendering.")
             return file_path
     except Exception as e:
@@ -186,6 +185,9 @@ async def upload_file(
     Tries send_video with metadata and thumbnail first; falls back to send_document.
     Uses unique thumbnail names per task and verifies file existence to prevent concurrency race conditions.
     """
+    if not file_path.exists() or file_path.stat().st_size == 0:
+        raise FileNotFoundError(f"File to upload does not exist or is empty: {file_path}")
+
     async with _UPLOAD_SEMAPHORE:
         thumb_to_use = None
         generated_thumb = None
