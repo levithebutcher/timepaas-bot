@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote
 import aiohttp
 import aiofiles
-from bot.config import DEFAULT_USER_AGENT
+from bot.config import DEFAULT_USER_AGENT, ARIA2_CONNECTIONS
 from bot.core.cleaner import check_free_disk_space
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ async def _download_via_aria2(
     headers: dict = None,
     progress_callback = None,
     cancel_event: asyncio.Event = None,
-    connections: int = 4
+    connections: int = ARIA2_CONNECTIONS
 ) -> bool:
     """
     Accelerated multi-connection downloader via aria2c (splits download into N parallel streams).
@@ -123,6 +123,9 @@ async def _download_via_aria2(
         f"--max-connection-per-server={connections}",
         f"--split={connections}",
         "--min-split-size=1M",
+        "--disk-cache=64M",
+        "--optimize-concurrent-downloads=true",
+        "--conditional-get=true",
         "--summary-interval=1",
         "--console-log-level=warn",
         f"--user-agent={user_agent}",
@@ -235,7 +238,7 @@ async def download_direct_stream(
     url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(url).strip())
     clean_headers = sanitize_headers(headers)
 
-    # 1. Accelerated parallel download via aria2c (safe 4 connections)
+    # 1. Accelerated parallel download via aria2c (configurable N parallel streams)
     if shutil.which("aria2c"):
         try:
             success = await _download_via_aria2(
@@ -244,7 +247,7 @@ async def download_direct_stream(
                 headers=clean_headers,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
-                connections=4
+                connections=ARIA2_CONNECTIONS
             )
             if success:
                 _validate_downloaded_file(target_path)
@@ -266,7 +269,7 @@ async def download_direct_stream(
         req_headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
 
     timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=60)
-    chunk_size = 1024 * 1024  # 1 MB
+    chunk_size = 2 * 1024 * 1024  # 2 MB buffer chunk for faster writes
 
     for attempt in range(1, max_retries + 1):
         if cancel_event and cancel_event.is_set():
@@ -282,7 +285,7 @@ async def download_direct_stream(
                 timeout=timeout,
                 headers=req_headers,
                 connector=connector,
-                read_bufsize=1024 * 512
+                read_bufsize=1024 * 1024
             ) as session:
                 async with session.get(url) as response:
                     if response.status not in (200, 206):

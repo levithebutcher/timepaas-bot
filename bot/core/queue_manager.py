@@ -17,7 +17,8 @@ from bot.config import (
     DOWNLOAD_DIR,
     TEMP_DIR,
     EXTRACT_DIR,
-    MAX_SPLIT_SIZE_BYTES
+    MAX_SPLIT_SIZE_BYTES,
+    ALBUM_CONCURRENT_DOWNLOADS
 )
 from bot.core.cleaner import remove_path, get_free_disk_gb
 from bot.core.progress import (
@@ -578,108 +579,142 @@ class QueueManager:
                         remove_path(prev_chunk_dir)
                         prev_chunk_dir = None
 
-                # 2. Download Chunk chunk_idx
+                # 2. Download Chunk chunk_idx (with controlled concurrency)
                 chunk_dir = DOWNLOAD_DIR / f"album_{batch.batch_id}_chunk_{chunk_idx}"
                 chunk_dir.mkdir(parents=True, exist_ok=True)
                 downloaded_items = []
+                active_dls = {}
+                dl_semaphore = asyncio.Semaphore(ALBUM_CONCURRENT_DOWNLOADS)
+                dl_lock = asyncio.Lock()
 
-                for item_idx, url in enumerate(chunk_urls):
+                async def process_item(item_idx: int, url: str):
+                    nonlocal completed_files, current_dl_info
                     if batch.cancel_event.is_set():
-                        break
+                        return
 
-                    current_dl_info = {
-                        "file_name": "Resolving stream...",
-                        "current": 0,
-                        "total": 0,
-                        "speed_str": "--",
-                        "eta_str": "--",
-                        "item_num": item_idx + 1,
-                        "chunk_total": len(chunk_urls)
-                    }
-                    await refresh_dashboard(force=True)
-
-                    try:
-                        media_info = await extract_media_link(url)
-                        if not media_info or not media_info.get("url"):
-                            raise RuntimeError("Could not resolve video stream from page.")
-
+                    async with dl_semaphore:
                         if batch.cancel_event.is_set():
-                            raise asyncio.CancelledError()
+                            return
 
-                        stream_url = media_info["url"]
-                        stream_type = media_info.get("type", "direct")
-                        title = media_info.get("title") or derive_filename(stream_url)
-                        if title.lower() in ("master.mp4", "extracted_media.mp4", "download.mp4", "video.mp4", "browser_media.mp4", "stream_video.mp4", "playlist.m3u8"):
-                            url_slug = [p for p in urlparse(url).path.split("/") if p and p not in ("v", "e", "d", "f", "watch", "file")]
-                            if url_slug:
-                                clean_slug = re.sub(r"[^\w\s\.\-]", "", url_slug[-1]).strip()
-                                if clean_slug:
-                                    title = f"{clean_slug}.mp4"
-
-                        headers = media_info.get("headers", {})
-                        target_path = chunk_dir / f"{item_idx + 1:02d}_{title}"
-                        start_dl_time = time.time()
-
-                        async def dl_progress(current, total):
-                            if batch.cancel_event.is_set():
-                                raise asyncio.CancelledError()
-                            nonlocal current_dl_info
-                            now = time.time()
-                            elapsed = now - start_dl_time
-                            sp_str = "--"
-                            et_str = "--"
-                            if elapsed > 0 and current > 0:
-                                sp = current / elapsed
-                                sp_str = f"{format_size(int(sp))}/s"
-                                if total > current:
-                                    et_str = format_time((total - current) / sp)
-                            current_dl_info = {
-                                "file_name": title,
-                                "current": current,
-                                "total": total,
-                                "speed_str": sp_str,
-                                "eta_str": et_str,
+                        async with dl_lock:
+                            active_dls[item_idx] = {
+                                "file_name": "Resolving stream...",
+                                "current": 0,
+                                "total": 0,
+                                "speed_str": "--",
+                                "eta_str": "--",
                                 "item_num": item_idx + 1,
                                 "chunk_total": len(chunk_urls)
                             }
-                            await refresh_dashboard()
+                            current_dl_info = {
+                                "active_list": list(active_dls.values()),
+                                "completed_in_pack": len(downloaded_items),
+                                "chunk_total": len(chunk_urls)
+                            }
+                        await refresh_dashboard(force=True)
 
-                        if stream_type == "m3u8":
-                            dl_file = await download_m3u8_stream(
-                                m3u8_url=stream_url,
-                                target_path=target_path.with_suffix(".mp4"),
-                                headers=headers,
-                                progress_callback=dl_progress,
-                                cancel_event=batch.cancel_event
-                            )
-                        else:
-                            dl_file = await download_direct_stream(
-                                url=stream_url,
-                                target_path=target_path,
-                                headers=headers,
-                                progress_callback=dl_progress,
-                                cancel_event=batch.cancel_event
-                            )
+                        try:
+                            media_info = await extract_media_link(url)
+                            if not media_info or not media_info.get("url"):
+                                raise RuntimeError("Could not resolve video stream from page.")
 
-                        caption = user_settings.get("custom_caption") or f"🎬 `{dl_file.name}`"
-                        downloaded_items.append((dl_file, caption))
-                        batch.done_count += 1
+                            if batch.cancel_event.is_set():
+                                raise asyncio.CancelledError()
 
-                    except asyncio.CancelledError:
-                        batch.cancelled_count += 1
-                        break
-                    except Exception as e:
-                        logger.error(f"Failed to process {url} in album batch: {e}")
-                        batch.failed_count += 1
-                        batch.failed_urls.append((url, str(e)))
-                    finally:
-                        completed_files += 1
+                            stream_url = media_info["url"]
+                            stream_type = media_info.get("type", "direct")
+                            title = media_info.get("title") or derive_filename(stream_url)
+                            if title.lower() in ("master.mp4", "extracted_media.mp4", "download.mp4", "video.mp4", "browser_media.mp4", "stream_video.mp4", "playlist.m3u8"):
+                                url_slug = [p for p in urlparse(url).path.split("/") if p and p not in ("v", "e", "d", "f", "watch", "file")]
+                                if url_slug:
+                                    clean_slug = re.sub(r"[^\w\s\.\-]", "", url_slug[-1]).strip()
+                                    if clean_slug:
+                                        title = f"{clean_slug}.mp4"
+
+                            headers = media_info.get("headers", {})
+                            target_path = chunk_dir / f"{item_idx + 1:02d}_{title}"
+                            start_dl_time = time.time()
+
+                            async def dl_progress(current, total):
+                                if batch.cancel_event.is_set():
+                                    raise asyncio.CancelledError()
+                                nonlocal current_dl_info
+                                now = time.time()
+                                elapsed = now - start_dl_time
+                                sp_str = "--"
+                                et_str = "--"
+                                if elapsed > 0 and current > 0:
+                                    sp = current / elapsed
+                                    sp_str = f"{format_size(int(sp))}/s"
+                                    if total > current:
+                                        et_str = format_time((total - current) / sp)
+                                async with dl_lock:
+                                    active_dls[item_idx] = {
+                                        "file_name": title,
+                                        "current": current,
+                                        "total": total,
+                                        "speed_str": sp_str,
+                                        "eta_str": et_str,
+                                        "item_num": item_idx + 1,
+                                        "chunk_total": len(chunk_urls)
+                                    }
+                                    current_dl_info = {
+                                        "active_list": list(active_dls.values()),
+                                        "completed_in_pack": len(downloaded_items),
+                                        "chunk_total": len(chunk_urls)
+                                    }
+                                await refresh_dashboard()
+
+                            if stream_type == "m3u8":
+                                dl_file = await download_m3u8_stream(
+                                    m3u8_url=stream_url,
+                                    target_path=target_path.with_suffix(".mp4"),
+                                    headers=headers,
+                                    progress_callback=dl_progress,
+                                    cancel_event=batch.cancel_event
+                                )
+                            else:
+                                dl_file = await download_direct_stream(
+                                    url=stream_url,
+                                    target_path=target_path,
+                                    headers=headers,
+                                    progress_callback=dl_progress,
+                                    cancel_event=batch.cancel_event
+                                )
+
+                            caption = user_settings.get("custom_caption") or f"🎬 `{dl_file.name}`"
+                            async with dl_lock:
+                                downloaded_items.append((dl_file, caption, item_idx))
+                                batch.done_count += 1
+
+                        except asyncio.CancelledError:
+                            batch.cancelled_count += 1
+                        except Exception as e:
+                            logger.error(f"Failed to process {url} in album batch: {e}")
+                            batch.failed_count += 1
+                            batch.failed_urls.append((url, str(e)))
+                        finally:
+                            async with dl_lock:
+                                active_dls.pop(item_idx, None)
+                                completed_files += 1
+                                current_dl_info = {
+                                    "active_list": list(active_dls.values()),
+                                    "completed_in_pack": len(downloaded_items),
+                                    "chunk_total": len(chunk_urls)
+                                }
+                            await refresh_dashboard(force=True)
+
+                await asyncio.gather(*(process_item(i, u) for i, u in enumerate(chunk_urls)))
 
                 current_dl_info = None
                 await refresh_dashboard(force=True)
 
                 if batch.cancel_event.is_set():
                     break
+
+                # Sort downloaded items back to exact natural sequence order
+                downloaded_items.sort(key=lambda x: x[2])
+                chunk_ready_items = [(f, cap) for f, cap, _ in downloaded_items]
 
                 # 3. If previous upload is still running, wait for it before launching next upload
                 if current_upload_task:
@@ -689,7 +724,7 @@ class QueueManager:
                         prev_chunk_dir = None
 
                 # 4. Launch concurrent upload of this chunk (pipelined)
-                if downloaded_items:
+                if chunk_ready_items:
                     async def run_chunk_upload(items, alb_idx, c_dir):
                         nonlocal current_up_info, uploaded_albums
                         current_up_info = {
@@ -716,7 +751,7 @@ class QueueManager:
 
                     prev_chunk_dir = chunk_dir
                     current_upload_task = asyncio.create_task(
-                        run_chunk_upload(downloaded_items, chunk_idx, chunk_dir)
+                        run_chunk_upload(chunk_ready_items, chunk_idx, chunk_dir)
                     )
                 else:
                     remove_path(chunk_dir)

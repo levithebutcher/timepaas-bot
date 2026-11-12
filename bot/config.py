@@ -34,10 +34,12 @@ for item in raw_admins.replace(";", ",").split(","):
         ADMIN_IDS.add(int(clean_item))
 
 # Concurrency & Queue Configuration
-MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
-MAX_USER_TASKS = int(os.getenv("MAX_USER_TASKS", "10"))
-PROGRESS_UPDATE_INTERVAL = float(os.getenv("PROGRESS_UPDATE_INTERVAL", "5.0"))
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "4"))
+MAX_USER_TASKS = int(os.getenv("MAX_USER_TASKS", "20"))
+PROGRESS_UPDATE_INTERVAL = float(os.getenv("PROGRESS_UPDATE_INTERVAL", "4.0"))
 MIN_FREE_DISK_GB = float(os.getenv("MIN_FREE_DISK_GB", "3.0"))
+ARIA2_CONNECTIONS = int(os.getenv("ARIA2_CONNECTIONS", "8"))
+ALBUM_CONCURRENT_DOWNLOADS = int(os.getenv("ALBUM_CONCURRENT_DOWNLOADS", "2"))
 
 # Paths & Directories
 DOWNLOAD_DIR = ROOT_DIR / os.getenv("DOWNLOAD_DIR", "downloads")

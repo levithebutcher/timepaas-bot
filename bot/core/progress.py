@@ -217,22 +217,41 @@ async def update_album_pipeline_dashboard(
 
     # Download section
     if current_dl:
-        file_name = current_dl.get("file_name", "Media")
-        if len(file_name) > 35:
-            file_name = file_name[:32] + "..."
-        curr_b = current_dl.get("current", 0)
-        tot_b = current_dl.get("total", 0)
-        speed = current_dl.get("speed_str", "--")
-        eta = current_dl.get("eta_str", "--")
-        pack_idx = current_dl.get("item_num", 1)
-        pack_tot = current_dl.get("chunk_total", 1)
-        bar = generate_bar(curr_b, tot_b)
-        dl_text = (
-            f"📥 **DOWNLOADING:** Pack [{pack_idx}/{pack_tot}]\n"
-            f"   ▶ `{file_name}`\n"
-            f"   📊 `{bar}`\n"
-            f"   💾 `{format_size(curr_b)}` / `{format_size(tot_b)}` • ⚡ `{speed}` • ⏱ `{eta}`"
-        )
+        if isinstance(current_dl, dict) and "active_list" in current_dl:
+            active_list = current_dl["active_list"]
+            pack_tot = current_dl.get("chunk_total", len(active_list))
+            completed_in_pack = current_dl.get("completed_in_pack", 0)
+            lines = [f"📥 **DOWNLOADING:** Pack [{completed_in_pack}/{pack_tot} Ready]"]
+            if active_list:
+                for dl_item in active_list[:2]:
+                    fn = dl_item.get("file_name", "Media")
+                    if len(fn) > 28:
+                        fn = fn[:25] + "..."
+                    cb = dl_item.get("current", 0)
+                    tb = dl_item.get("total", 0)
+                    sp = dl_item.get("speed_str", "--")
+                    bar = generate_bar(cb, tb, length=8)
+                    lines.append(f"   ▶ `{fn}`\n     `{bar}` ({format_size(cb)}) • ⚡ `{sp}`")
+            else:
+                lines.append("   ⏳ <i>Finalizing pack downloads...</i>")
+            dl_text = "\n".join(lines)
+        else:
+            file_name = current_dl.get("file_name", "Media")
+            if len(file_name) > 35:
+                file_name = file_name[:32] + "..."
+            curr_b = current_dl.get("current", 0)
+            tot_b = current_dl.get("total", 0)
+            speed = current_dl.get("speed_str", "--")
+            eta = current_dl.get("eta_str", "--")
+            pack_idx = current_dl.get("item_num", 1)
+            pack_tot = current_dl.get("chunk_total", 1)
+            bar = generate_bar(curr_b, tot_b)
+            dl_text = (
+                f"📥 **DOWNLOADING:** Pack [{pack_idx}/{pack_tot}]\n"
+                f"   ▶ `{file_name}`\n"
+                f"   📊 `{bar}`\n"
+                f"   💾 `{format_size(curr_b)}` / `{format_size(tot_b)}` • ⚡ `{speed}` • ⏱ `{eta}`"
+            )
     else:
         if completed_files >= total_files and total_files > 0:
             dl_text = "📥 **DOWNLOADING:** ✅ <i>All downloads completed!</i>"

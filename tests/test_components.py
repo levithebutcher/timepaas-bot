@@ -214,6 +214,69 @@ class TestComponents(unittest.TestCase):
         self.assertTrue(success)
         self.assertTrue(batch.cancel_event.is_set())
 
+    def test_concurrency_and_aria2_connections(self):
+        from bot.config import ARIA2_CONNECTIONS, ALBUM_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_TASKS
+        self.assertGreaterEqual(ARIA2_CONNECTIONS, 4)
+        self.assertGreaterEqual(ALBUM_CONCURRENT_DOWNLOADS, 2)
+        self.assertGreaterEqual(MAX_CONCURRENT_TASKS, 4)
+
+    def test_album_dashboard_multi_download_format(self):
+        import asyncio
+        from bot.core.progress import update_album_pipeline_dashboard
+
+        edited_texts = []
+
+        class MockClient:
+            async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+                edited_texts.append(text)
+                return True
+
+        current_dl = {
+            "active_list": [
+                {
+                    "file_name": "Episode_01.mp4",
+                    "current": 50 * 1024 * 1024,
+                    "total": 100 * 1024 * 1024,
+                    "speed_str": "12.50 MB/s",
+                    "eta_str": "00:04",
+                    "item_num": 1,
+                    "chunk_total": 10
+                },
+                {
+                    "file_name": "Episode_02.mp4",
+                    "current": 80 * 1024 * 1024,
+                    "total": 100 * 1024 * 1024,
+                    "speed_str": "15.00 MB/s",
+                    "eta_str": "00:02",
+                    "item_num": 2,
+                    "chunk_total": 10
+                }
+            ],
+            "completed_in_pack": 0,
+            "chunk_total": 10
+        }
+
+        async def run_dash():
+            await update_album_pipeline_dashboard(
+                client=MockClient(),
+                chat_id=123,
+                message_id=456,
+                batch_id="dash_test_123",
+                total_files=10,
+                completed_files=0,
+                total_albums=1,
+                uploaded_albums=0,
+                current_dl=current_dl,
+                force=True
+            )
+
+        asyncio.run(run_dash())
+        self.assertEqual(len(edited_texts), 1)
+        self.assertIn("Episode_01.mp4", edited_texts[0])
+        self.assertIn("Episode_02.mp4", edited_texts[0])
+        self.assertIn("12.50 MB/s", edited_texts[0])
+        self.assertIn("15.00 MB/s", edited_texts[0])
+
 
 if __name__ == "__main__":
     unittest.main()
