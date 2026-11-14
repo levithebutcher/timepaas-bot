@@ -116,16 +116,21 @@ async def _download_via_aria2(
     parsed = urlparse(url)
     referer = clean_headers.get("Referer", f"{parsed.scheme}://{parsed.netloc}/")
 
+    split_connections = max(16, min(32, connections * 2))
+    server_connections = min(16, connections)
+
     cmd = [
         aria2_bin,
         "--allow-overwrite=true",
         "--file-allocation=none",
-        f"--max-connection-per-server={connections}",
-        f"--split={connections}",
+        f"--max-connection-per-server={server_connections}",
+        f"--split={split_connections}",
         "--min-split-size=1M",
-        "--disk-cache=64M",
+        "--piece-length=1M",
+        "--disk-cache=128M",
         "--optimize-concurrent-downloads=true",
         "--conditional-get=true",
+        "--stream-piece-selector=geom",
         "--summary-interval=1",
         "--console-log-level=warn",
         f"--user-agent={user_agent}",
@@ -269,7 +274,7 @@ async def download_direct_stream(
         req_headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
 
     timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=60)
-    chunk_size = 2 * 1024 * 1024  # 2 MB buffer chunk for faster writes
+    chunk_size = 4 * 1024 * 1024  # 4 MB turbo buffer chunk for accelerated I/O write rate
 
     for attempt in range(1, max_retries + 1):
         if cancel_event and cancel_event.is_set():

@@ -161,42 +161,16 @@ async def update_status_message(
     if not display_name:
         display_name = "Media File"
 
-    if is_album:
-        text = (
-            f"╭─────────────────────────────────────╮\n"
-            f"│   🎬  V I D E O   A L B U M   H U D  │\n"
-            f"╰─────────────────────────────────────╯\n"
-            f"╭─ 📂 ITEM IDENTIFIER\n"
-            f"│ 🏷 Name: `{display_name}`\n"
-            f"│ 🆔 Task: `{task_id[:8]}` • 🎞 *Album Mode*\n"
-            f"╰─────────────────────────────────────\n"
-            f"╭─ 📈 REAL-TIME PROGRESSION\n"
-            f"│ 📊 `{smooth_bar}`\n"
-            f"│ 💾 `{curr_str}` / `{total_str}`\n"
-            f"│ ⚡ `{speed_str}`  •  ⏱ ETA: `{eta_str}`\n"
-            f"╰─────────────────────────────────────\n"
-            f"╭─ ⚙️ ENGINE STATUS\n"
-            f"│ {action}\n"
-            f"╰─────────────────────────────────────"
-        )
-    else:
-        text = (
-            f"╭─────────────────────────────────────╮\n"
-            f"│   ⚡  T I M E P A S S   L E E C H   │\n"
-            f"╰─────────────────────────────────────╯\n"
-            f"╭─ 📂 MEDIA TARGET\n"
-            f"│ 🏷 Name: `{display_name}`\n"
-            f"│ 🆔 Task: `{task_id[:8]}` • 🎥 *Video Player*\n"
-            f"╰─────────────────────────────────────\n"
-            f"╭─ 📈 REAL-TIME TRANSMISSION\n"
-            f"│ 📊 `{smooth_bar}`\n"
-            f"│ 💾 `{curr_str}` / `{total_str}`\n"
-            f"│ ⚡ `{speed_str}`  •  ⏱ ETA: `{eta_str}`\n"
-            f"╰─────────────────────────────────────\n"
-            f"╭─ ⚙️ ACTIVE PROCESS\n"
-            f"│ {action}\n"
-            f"╰─────────────────────────────────────"
-        )
+    mode_tag = "🎞 <b>Album Mode</b>" if is_album else "🎥 <b>Video Player</b>"
+    text = (
+        f"<blockquote>"
+        f"⚡ <b>TIMEPASS LEECH</b> • {mode_tag}\n"
+        f"📁 <code>{display_name}</code>\n"
+        f"📊 <code>{smooth_bar}</code>\n"
+        f"💾 <b>{curr_str}</b> / {total_str} • ⚡ <b>{speed_str}</b> • ⏱ <b>{eta_str}</b>\n"
+        f"🔄 {action}"
+        f"</blockquote>"
+    )
 
     buttons = []
     # Real-time telemetry badges
@@ -266,16 +240,13 @@ async def update_album_pipeline_dashboard(
     if current_up:
         alb_num = current_up.get("album_num", 1)
         alb_cnt = current_up.get("count", 1)
-        alb_status = current_up.get("status", "Transmitting media group to Telegram...")
-        up_text = (
-            f"📤 **UPLOADING:** Album {alb_num}/{total_albums} ({alb_cnt} videos)\n"
-            f"   ⏳ <i>{alb_status}</i>"
-        )
+        alb_status = current_up.get("status", "Uploading media...")
+        up_text = f"📤 <b>Uploading:</b> Album {alb_num}/{total_albums} ({alb_cnt} videos) • <i>{alb_status}</i>"
     else:
         if uploaded_albums >= total_albums and total_albums > 0:
-            up_text = "📤 **UPLOADING:** ✅ <i>All albums uploaded!</i>"
+            up_text = "📤 <b>Uploading:</b> ✅ <i>All albums uploaded!</i>"
         else:
-            up_text = "📤 **UPLOADING:** <i>Waiting for first download pack to complete...</i>"
+            up_text = "📤 <b>Uploading:</b> <i>Waiting for downloads...</i>"
 
     # Download section
     if current_dl:
@@ -283,7 +254,7 @@ async def update_album_pipeline_dashboard(
             active_list = current_dl["active_list"]
             pack_tot = current_dl.get("chunk_total", len(active_list))
             completed_in_pack = current_dl.get("completed_in_pack", 0)
-            lines = [f"📥 **DOWNLOADING:** Pack [{completed_in_pack}/{pack_tot} Ready]"]
+            lines = [f"📥 <b>Downloading:</b> Pack [{completed_in_pack}/{pack_tot}]"]
             if active_list:
                 for dl_item in active_list[:2]:
                     fn = dl_item.get("file_name", "Media")
@@ -293,58 +264,47 @@ async def update_album_pipeline_dashboard(
                     tb = dl_item.get("total", 0)
                     sp = dl_item.get("speed_str", "--")
                     bar = generate_smooth_bar(cb, tb, length=8)
-                    lines.append(f"   ▶ `{fn}`\n     `{bar}` ({format_size(cb)}) • ⚡ `{sp}`")
+                    lines.append(f"• <code>{fn}</code> — {bar} ({format_size(cb)}) • ⚡ {sp}")
             else:
-                lines.append("   ⏳ <i>Finalizing pack downloads...</i>")
+                lines.append("• <i>Finalizing pack...</i>")
             dl_text = "\n".join(lines)
         else:
             file_name = current_dl.get("file_name", "Media")
-            if len(file_name) > 35:
-                file_name = file_name[:32] + "..."
+            if len(file_name) > 30:
+                file_name = file_name[:27] + "..."
             curr_b = current_dl.get("current", 0)
             tot_b = current_dl.get("total", 0)
             speed = current_dl.get("speed_str", "--")
             eta = current_dl.get("eta_str", "--")
-            pack_idx = current_dl.get("item_num", 1)
-            pack_tot = current_dl.get("chunk_total", 1)
-            bar = generate_smooth_bar(curr_b, tot_b, length=10)
+            bar = generate_smooth_bar(curr_b, tot_b, length=8)
             dl_text = (
-                f"   ▶ `{file_name}` [Pack {pack_idx}/{pack_tot}]\n"
-                f"     `{bar}` ({format_size(curr_b)} / {format_size(tot_b)})\n"
-                f"     ⚡ `{speed}`  •  ⏱ ETA: `{eta}`"
+                f"📥 <b>Downloading:</b> <code>{file_name}</code>\n"
+                f"• {bar} ({format_size(curr_b)} / {format_size(tot_b)}) • ⚡ {speed} • ⏱ {eta}"
             )
     else:
         if completed_files >= total_files and total_files > 0:
-            dl_text = "   ✅ <i>All downloads completed!</i>"
+            dl_text = "📥 <b>Downloading:</b> ✅ <i>All completed!</i>"
         else:
-            dl_text = "   ⏳ <i>Preparing next 10-pack chunk...</i>"
+            dl_text = "📥 <b>Downloading:</b> <i>Preparing next pack...</i>"
 
     overall_pct = (completed_files / total_files * 100.0) if total_files > 0 else 0.0
-    smooth_overall = generate_smooth_bar(completed_files, total_files, length=12)
+    smooth_overall = generate_smooth_bar(completed_files, total_files, length=10)
 
     text = (
-        f"╭─────────────────────────────────────╮\n"
-        f"│   🎬  A L B U M   P I P E L I N E   │\n"
-        f"╰─────────────────────────────────────╯\n"
-        f"╭─ 📤 EGRESS STAGE\n"
-        f"{up_text}\n"
-        f"╰─────────────────────────────────────\n"
-        f"╭─ 📥 INGRESS STAGE\n"
-        f"{dl_text}\n"
-        f"╰─────────────────────────────────────\n"
-        f"╭─ 📊 PIPELINE TELEMETRY\n"
-        f"│ 📈 `{smooth_overall}`\n"
-        f"│ • Processed: {completed_files}/{total_files} Files ({overall_pct:.1f}%)\n"
-        f"│ • Albums: {uploaded_albums}/{total_albums} Delivered to Telegram\n"
-        f"│ • Host Disk: {free_gb:.1f} GB Free • Multi-Stream: ACTIVE\n"
-        f"╰─────────────────────────────────────"
+        f"<blockquote>"
+        f"🎬 <b>ALBUM PIPELINE</b> • <b>{completed_files}/{total_files} Done</b> ({overall_pct:.0f}%)\n"
+        f"📊 <code>{smooth_overall}</code>\n\n"
+        f"{dl_text}\n\n"
+        f"{up_text}\n\n"
+        f"🎞 <b>Albums:</b> {uploaded_albums}/{total_albums} • 💾 <b>Disk:</b> {free_gb:.1f} GB Free"
+        f"</blockquote>"
     )
 
     alb_buttons = [
         [
-            InlineKeyboardButton(f"📊 {overall_pct:.1f}% Ready", callback_data=f"hud:batch_prog:{batch_id}"),
+            InlineKeyboardButton(f"📊 {overall_pct:.0f}%", callback_data=f"hud:batch_prog:{batch_id}"),
             InlineKeyboardButton(f"💾 {free_gb:.1f} GB Free", callback_data=f"hud:batch_disk:{batch_id}"),
-            InlineKeyboardButton(f"🎞 {uploaded_albums}/{total_albums} Albums", callback_data=f"hud:batch_albs:{batch_id}")
+            InlineKeyboardButton(f"🎞 {uploaded_albums}/{total_albums}", callback_data=f"hud:batch_albs:{batch_id}")
         ],
         [InlineKeyboardButton("🛑 Cancel Entire Album", callback_data=f"cancel_batch:{batch_id}")]
     ]

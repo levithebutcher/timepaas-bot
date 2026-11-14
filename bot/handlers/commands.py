@@ -35,26 +35,19 @@ def is_authorized(user_id: int) -> bool:
 @Client.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     if not is_authorized(message.from_user.id):
-        await message.reply_text("⛔ **Access Denied.** You are not authorized to use this bot.")
+        await message.reply_text("⛔ <b>Access Denied.</b> You are not authorized to use this bot.")
         return
 
     text = (
-        "╭─────────────────────────────────────╮\n"
-        "│  ⚡ TIMEPASS LEECH & DOWNLOADER BOT │\n"
-        "╰─────────────────────────────────────╯\n"
-        "╭─ 🌟 ULTRA-PREMIUM FEATURES\n"
-        "│ • 🚀 Multi-Stream Ingress (Aria2 8-conn)\n"
-        "│ • 🎬 Double-Buffered Album Pipelining\n"
-        "│ • 🧠 Hybrid Headless + DOM Decryption\n"
-        "│ • 📦 Auto-Extract ZIP / RAR Archives\n"
-        "│ • ✂️ Auto-Split Videos > 1.95 GB\n"
-        "│ • 🎛 Real-time Smooth 8-Level Fractional HUD\n"
-        "╰─────────────────────────────────────\n"
-        "╭─ 💡 QUICK START\n"
-        "│ 🔗 Send video links directly, or\n"
-        "│ 🎞 Send `/album <links>` for Video Album mode\n"
-        "│ 📖 Send `/help` for all commands\n"
-        "╰─────────────────────────────────────"
+        "<blockquote>"
+        "⚡ <b>TIMEPASS LEECH & DOWNLOADER</b>\n\n"
+        "Send any video link to download and upload directly to Telegram!\n\n"
+        "• <b>Single link:</b> Direct video player upload\n"
+        "• <b>Multiple links:</b> Auto-grouped into video albums (up to 10 per album)\n"
+        "• <b>Fast Multi-Stream:</b> 32-split Aria2 turbo engine\n"
+        "• <b>Auto-Split:</b> Automatically splits videos &gt; 1.95 GB\n\n"
+        "📖 <i>Send /help for full command guide</i>"
+        "</blockquote>"
     )
     await message.reply_text(text)
 
@@ -65,24 +58,17 @@ async def help_handler(client: Client, message: Message):
         return
 
     text = (
-        "╭─────────────────────────────────────╮\n"
-        "│    📖  C O M M A N D   G U I D E    │\n"
-        "╰─────────────────────────────────────╯\n"
-        "╭─ 🎮 CORE COMMANDS\n"
-        "│ • `<urls>` - Direct Leech (Individual Players)\n"
-        "│ • `/album <urls>` - Pipelined Video Album (10-packs)\n"
-        "│ • `/status` - Live Queue & Active Tasks HUD\n"
-        "│ • `/cancelall` - Cancel all your active tasks\n"
-        "╰─────────────────────────────────────\n"
-        "╭─ 🎨 CUSTOMIZATION\n"
-        "│ • `/setthumb` - Reply to image to set thumbnail\n"
-        "│ • `/clearthumb` - Clear thumbnail (auto-generate)\n"
-        "│ • `/setcaption <text>` - Custom video caption\n"
-        "╰─────────────────────────────────────\n"
-        "╭─ 💡 PRO TIPS\n"
-        "│ ⚡ Click HUD badges to view live telemetry toasts!\n"
-        "│ 🛑 Use the inline cancel button anytime.\n"
-        "╰─────────────────────────────────────"
+        "<blockquote>"
+        "📖 <b>COMMAND GUIDE</b>\n\n"
+        "• <code>&lt;link&gt;</code> — Download & upload single video\n"
+        "• <code>&lt;link1&gt; &lt;link2&gt;...</code> — Auto-grouped video album\n"
+        "• <code>/album &lt;links&gt;</code> — Force album mode\n"
+        "• <code>/status</code> — View active tasks\n"
+        "• <code>/cancelall</code> — Cancel all active tasks\n"
+        "• <code>/setthumb</code> — Reply to image to set thumbnail\n"
+        "• <code>/clearthumb</code> — Reset thumbnail\n"
+        "• <code>/setcaption &lt;text&gt;</code> — Set custom caption"
+        "</blockquote>"
     )
     await message.reply_text(text)
 
@@ -95,26 +81,24 @@ async def status_handler(client: Client, message: Message):
     active_tasks = [t for t in queue_manager.tasks.values() if t.status not in ("Done", "Failed", "Cancelled")]
     if not active_tasks:
         await message.reply_text(
-            "╭─────────────────────────────────────╮\n"
-            "│   📭  N O   A C T I V E   T A S K S │\n"
-            "╰─────────────────────────────────────╯\n"
+            "<blockquote>"
+            "📭 <b>NO ACTIVE TASKS</b>\n"
             "All queues are clear. Send links to start downloading!"
+            "</blockquote>"
         )
         return
 
-    lines = [
-        "╭─────────────────────────────────────╮",
-        "│     📊  A C T I V E   Q U E U E     │",
-        "╰─────────────────────────────────────╯"
-    ]
-    for idx, t in enumerate(active_tasks[:15], 1):
-        lines.append(
-            f"╭─ [{idx:02d}] 🆔 `{t.id[:8]}` • State: {t.status}\n"
-            f"│ 🔗 `{t.url[:45]}...`\n"
-            f"╰─────────────────────────────────────"
-        )
+    items = []
+    for idx, t in enumerate(active_tasks[:10], 1):
+        items.append(f"• <b>[{idx:02d}]</b> <code>{t.id[:8]}</code> — <i>{t.status}</i>\n  <code>{t.url[:40]}...</code>")
 
-    await message.reply_text("\n".join(lines))
+    text = (
+        f"<blockquote>"
+        f"📊 <b>ACTIVE QUEUE ({len(active_tasks)} Tasks)</b>\n\n"
+        + "\n\n".join(items) +
+        f"</blockquote>"
+    )
+    await message.reply_text(text)
 
 
 @Client.on_message(filters.command("cancelall") & filters.private)

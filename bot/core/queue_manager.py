@@ -473,13 +473,13 @@ class QueueManager:
                 await client.edit_message_text(
                     chat_id=task.chat_id,
                     message_id=task.status_msg_id,
-                    text=f"🚫 **Task Cancelled.**\n🔗 `{task.url}`"
+                    text=f"<blockquote>🚫 <b>Task Cancelled</b>\n🔗 <code>{task.url}</code></blockquote>"
                 )
             else:
                 await client.edit_message_text(
                     chat_id=task.chat_id,
                     message_id=task.status_msg_id,
-                    text=f"❌ **Task Failed!**\n🔗 `{task.url}`\n**Reason:** `{task.error_msg}`"
+                    text=f"<blockquote>❌ <b>Task Failed</b>\n🔗 <code>{task.url}</code>\n<b>Reason:</b> <code>{task.error_msg}</code></blockquote>"
                 )
         except Exception as e:
             logger.debug(f"Could not update final task status for {task.id}: {e}")
@@ -784,7 +784,7 @@ class QueueManager:
                     await client.edit_message_text(
                         chat_id=batch.chat_id,
                         message_id=status_msg_id,
-                        text=f"🚫 **Album Batch Cancelled by user.**\nBatch ID: `{batch.batch_id[:8]}`"
+                        text=f"<blockquote>🚫 <b>Album Batch Cancelled</b>\n🆔 <code>{batch.batch_id[:8]}</code></blockquote>"
                     )
                 except Exception:
                     pass
@@ -803,10 +803,10 @@ class QueueManager:
             return
 
         header = [
-            "🏁 **Batch Processing Report:**",
-            f"✅ **Finished:** {batch.done_count}",
-            f"❌ **Failed:** {batch.failed_count}",
-            f"🚫 **Cancelled:** {batch.cancelled_count}"
+            "<blockquote>🏁 <b>Batch Processing Report</b>",
+            f"✅ <b>Finished:</b> {batch.done_count}",
+            f"❌ <b>Failed:</b> {batch.failed_count}",
+            f"🚫 <b>Cancelled:</b> {batch.cancelled_count}"
         ]
 
         messages_to_send = []
@@ -814,20 +814,23 @@ class QueueManager:
         current_length = sum(len(line) + 1 for line in current_chunk)
 
         if batch.failed_urls:
-            current_chunk.append("\n**Failed Links:**")
+            current_chunk.append("\n<b>Failed Links:</b>")
             current_length += 16
             for url, err in batch.failed_urls:
                 err_clean = str(err).replace("\n", " ")[:60]
-                line = f"• `{url}` — *{err_clean}*"
+                line = f"• <code>{url}</code> — <i>{err_clean}</i>"
                 if current_length + len(line) + 1 > 3500:
+                    current_chunk.append("</blockquote>")
                     messages_to_send.append("\n".join(current_chunk))
-                    current_chunk = [f"**Failed Links (Continued):**\n{line}"]
+                    current_chunk = [f"<blockquote><b>Failed Links (Continued):</b>\n{line}"]
                     current_length = len(current_chunk[0])
                 else:
                     current_chunk.append(line)
                     current_length += len(line) + 1
 
         if current_chunk:
+            if not current_chunk[-1].endswith("</blockquote>"):
+                current_chunk.append("</blockquote>")
             messages_to_send.append("\n".join(current_chunk))
 
         for msg_text in messages_to_send:

@@ -54,6 +54,36 @@ VIDARA_DOMAINS = {
     "gasobni.com"
 }
 
+FILEMOON_DOMAINS = {
+    "filemoon.sx", "filemoon.to", "filemoon.in", "moonplayer.top",
+    "filemoon.top", "filemoon.wf", "filemoon.nl"
+}
+
+VOE_DOMAINS = {
+    "voe.sx", "roe.sx", "voe-unblock.com", "turing.voe.sx", "repacki.org",
+    "audaciousdefectiveluncheon.com"
+}
+
+MP4UPLOAD_DOMAINS = {
+    "mp4upload.com", "www.mp4upload.com"
+}
+
+VIDGUARD_DOMAINS = {
+    "vidguard.to", "vgembed.com", "vembed.net", "listeamed.net", "v6embed.xyz"
+}
+
+GOFILE_DOMAINS = {
+    "gofile.io", "www.gofile.io"
+}
+
+KRAKENFILES_DOMAINS = {
+    "krakenfiles.com", "www.krakenfiles.com"
+}
+
+PIXELDRAIN_DOMAINS = {
+    "pixeldrain.com", "www.pixeldrain.com"
+}
+
 
 def unpack_dean_edwards(payload: str) -> str:
     """
@@ -585,6 +615,230 @@ async def resolve_vidara(url: str) -> dict:
     return None
 
 
+async def resolve_filemoon(url: str) -> dict:
+    """Extracts direct streaming manifest or mp4 from Filemoon."""
+    headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url}
+    try:
+        clean_url = url.replace("/d/", "/e/")
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(clean_url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+
+        unpacked = unpack_dean_edwards(html) or html
+        m3u8_m = re.findall(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', unpacked)
+        if not m3u8_m:
+            m3u8_m = re.findall(r'file:\s*["\']([^"\']+)["\']', unpacked)
+
+        if m3u8_m:
+            stream_url = m3u8_m[0]
+            title_m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+            title = "filemoon_video.mp4"
+            if title_m:
+                t = title_m.group(1).split("-")[0].strip()
+                if t:
+                    title = f"{re.sub(r'[^\\w\\s\\.\\-]', '', t).strip().replace(' ', '_')}.mp4"
+            return {
+                "type": "m3u8" if ".m3u8" in stream_url else "direct",
+                "url": stream_url,
+                "title": title,
+                "headers": headers
+            }
+    except Exception as e:
+        logger.debug(f"Filemoon extraction failed for {url}: {e}")
+    return None
+
+
+async def resolve_voe(url: str) -> dict:
+    """Extracts direct HLS manifest from Voe / Roe."""
+    headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url}
+    try:
+        clean_url = url.replace("/e/", "/").replace("/d/", "/")
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(clean_url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+
+        m3u8_m = re.findall(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', html)
+        if not m3u8_m:
+            b64_matches = re.findall(r"window\\.location\\.href\\s*=\\s*['\"](https?://[^'\"]+)['\"]", html)
+            if b64_matches:
+                async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                    async with session.get(b64_matches[0], allow_redirects=True) as resp2:
+                        html2 = await resp2.text()
+                        m3u8_m = re.findall(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', html2)
+
+        if m3u8_m:
+            title_m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+            title = "voe_video.mp4"
+            if title_m:
+                t = title_m.group(1).split("|")[0].strip()
+                if t:
+                    title = f"{re.sub(r'[^\\w\\s\\.\\-]', '', t).strip().replace(' ', '_')}.mp4"
+            return {
+                "type": "m3u8",
+                "url": m3u8_m[0],
+                "title": title,
+                "headers": headers
+            }
+    except Exception as e:
+        logger.debug(f"Voe extraction failed for {url}: {e}")
+    return None
+
+
+async def resolve_mp4upload(url: str) -> dict:
+    """Extracts direct MP4 stream from Mp4Upload."""
+    headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url}
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+
+        mp4_m = re.findall(r'player\\.src\\(\\{\\s*type:\\s*["\']video/mp4["\'],\\s*src:\\s*["\']([^"\']+)["\']', html)
+        if not mp4_m:
+            mp4_m = re.findall(r'["\'](https?://[^\\s"\'<>]+\\.mp4[^\\s"\'<>]*)["\']', html)
+
+        if mp4_m:
+            title_m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+            title = "mp4upload_video.mp4"
+            if title_m:
+                t = title_m.group(1).split("-")[0].strip()
+                if t:
+                    title = f"{re.sub(r'[^\\w\\s\\.\\-]', '', t).strip().replace(' ', '_')}.mp4"
+            return {
+                "type": "direct",
+                "url": mp4_m[0],
+                "title": title,
+                "headers": headers
+            }
+    except Exception as e:
+        logger.debug(f"Mp4Upload extraction failed for {url}: {e}")
+    return None
+
+
+async def resolve_vidguard(url: str) -> dict:
+    """Extracts stream from Vidguard / Vgembed."""
+    headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url}
+    try:
+        clean_url = url.replace("/d/", "/e/")
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(clean_url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+
+        unpacked = unpack_dean_edwards(html) or html
+        stream_m = re.findall(r'["\'](https?://[^"\']+\\.(?:m3u8|mp4)[^"\']*)["\']', unpacked)
+        if stream_m:
+            s_url = stream_m[0]
+            return {
+                "type": "m3u8" if ".m3u8" in s_url else "direct",
+                "url": s_url,
+                "title": "vidguard_video.mp4",
+                "headers": headers
+            }
+    except Exception as e:
+        logger.debug(f"Vidguard extraction failed for {url}: {e}")
+    return None
+
+
+async def resolve_gofile(url: str) -> dict:
+    """Extracts direct download link from Gofile."""
+    try:
+        content_id = url.strip("/").split("/")[-1]
+        api_url = f"https://api.gofile.io/contents/{content_id}?wt=4fd6sg89d7s6"
+        headers = {"User-Agent": DEFAULT_USER_AGENT}
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(api_url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    status = data.get("status")
+                    if status == "ok":
+                        children = data.get("data", {}).get("children", {})
+                        for child in children.values():
+                            link = child.get("link")
+                            name = child.get("name") or "gofile_video.mp4"
+                            if link:
+                                return {
+                                    "type": "direct",
+                                    "url": link,
+                                    "title": name,
+                                    "headers": {"Cookie": f"accountToken={data.get('data', {}).get('token', '')}"}
+                                }
+    except Exception as e:
+        logger.debug(f"Gofile extraction failed for {url}: {e}")
+    return None
+
+
+async def resolve_krakenfiles(url: str) -> dict:
+    """Extracts direct video download from Krakenfiles."""
+    headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url}
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+
+        src_m = re.findall(r'<source[^>]*src=[\'"]([^\'"]+)[\'"]', html)
+        if src_m:
+            stream_url = src_m[0]
+            if stream_url.startswith("//"):
+                stream_url = "https:" + stream_url
+            return {
+                "type": "direct",
+                "url": stream_url,
+                "title": "krakenfiles_video.mp4",
+                "headers": headers
+            }
+
+        post_url_m = re.search(r'data-url=[\'"]([^\'"]+)[\'"]', html)
+        token_m = re.search(r'id=[\'"]token[\'"][^>]*value=[\'"]([^\'"]+)[\'"]', html)
+        if post_url_m and token_m:
+            dl_post = "https:" + post_url_m.group(1) if post_url_m.group(1).startswith("//") else post_url_m.group(1)
+            async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                async with session.post(dl_post, data={"token": token_m.group(1)}) as p_resp:
+                    if p_resp.status == 200:
+                        p_data = await p_resp.json()
+                        dl_url = p_data.get("url")
+                        if dl_url:
+                            return {
+                                "type": "direct",
+                                "url": dl_url,
+                                "title": "krakenfiles_video.mp4",
+                                "headers": headers
+                            }
+    except Exception as e:
+        logger.debug(f"Krakenfiles extraction failed for {url}: {e}")
+    return None
+
+
+async def resolve_pixeldrain(url: str) -> dict:
+    """Extracts direct file stream from Pixeldrain."""
+    try:
+        file_id = url.strip("/").split("/")[-1]
+        direct_url = f"https://pixeldrain.com/api/file/{file_id}"
+        return {
+            "type": "direct",
+            "url": direct_url,
+            "title": f"pixeldrain_{file_id}.mp4",
+            "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": "https://pixeldrain.com/"}
+        }
+    except Exception as e:
+        logger.debug(f"Pixeldrain extraction failed for {url}: {e}")
+    return None
+
+
 async def extract_from_video_hosts(url: str) -> dict:
     """
     Tier-0 Router: Checks if URL belongs to any specialized video hosting provider.
@@ -623,5 +877,33 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_matching_host(netloc, ARCHIVEBATE_DOMAINS):
         logger.info(f"Target recognized as Archivebate: {url}")
         return await resolve_archivebate(url)
+
+    if is_matching_host(netloc, FILEMOON_DOMAINS):
+        logger.info(f"Target recognized as Filemoon: {url}")
+        return await resolve_filemoon(url)
+
+    if is_matching_host(netloc, VOE_DOMAINS):
+        logger.info(f"Target recognized as Voe/Roe: {url}")
+        return await resolve_voe(url)
+
+    if is_matching_host(netloc, MP4UPLOAD_DOMAINS):
+        logger.info(f"Target recognized as Mp4Upload: {url}")
+        return await resolve_mp4upload(url)
+
+    if is_matching_host(netloc, VIDGUARD_DOMAINS):
+        logger.info(f"Target recognized as VidGuard: {url}")
+        return await resolve_vidguard(url)
+
+    if is_matching_host(netloc, GOFILE_DOMAINS):
+        logger.info(f"Target recognized as Gofile: {url}")
+        return await resolve_gofile(url)
+
+    if is_matching_host(netloc, KRAKENFILES_DOMAINS):
+        logger.info(f"Target recognized as Krakenfiles: {url}")
+        return await resolve_krakenfiles(url)
+
+    if is_matching_host(netloc, PIXELDRAIN_DOMAINS):
+        logger.info(f"Target recognized as Pixeldrain: {url}")
+        return await resolve_pixeldrain(url)
 
     return None

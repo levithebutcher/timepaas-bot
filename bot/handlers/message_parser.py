@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 URL_REGEX = re.compile(r"(https?://[^\s<>\"']+|www\.[^\s<>\"']+)", re.IGNORECASE)
 
 
-async def process_submitted_urls(client: Client, message: Message, target_text: str, is_album: bool = False):
+async def process_submitted_urls(client: Client, message: Message, target_text: str, is_album: bool = None):
     """Processes URL extraction, queue limit checking, and enqueuing tasks."""
     user_id = message.from_user.id
 
@@ -55,6 +55,10 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
 
     # Intelligent natural sort with fallback to original submission order
     clean_urls = natural_sort_urls(clean_urls)
+
+    # Auto-detect album mode: if multiple links sent together, automatically group into video album!
+    if is_album is None:
+        is_album = len(clean_urls) > 1
 
     # Check maximum allowed URLs per message (album mode supports larger batches up to 100)
     effective_max_tasks = max(MAX_USER_TASKS, 100) if is_album else MAX_USER_TASKS
@@ -86,17 +90,11 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
     if is_album:
         batch_id = str(uuid.uuid4())
         status_text = (
-            f"╭─────────────────────────────────────╮\n"
-            f"│   🎬  A L B U M   P I P E L I N E   │\n"
-            f"╰─────────────────────────────────────╯\n"
-            f"╭─ 📦 INGESTION BATCH\n"
-            f"│ 🆔 Batch: `{batch_id[:8]}` • 🎞 *Video Album*\n"
-            f"│ 🔢 Items: {len(clean_urls)} video links accepted\n"
-            f"│ 🗂 Chunking: Auto-sequenced into 10-packs\n"
-            f"╰─────────────────────────────────────\n"
-            f"╭─ ⚙️ ENGINE STATUS\n"
-            f"│ ⏳ *Starting Double-Buffered Download/Upload Pipeline...*\n"
-            f"╰─────────────────────────────────────"
+            f"<blockquote>"
+            f"🎬 <b>VIDEO ALBUM QUEUE</b>\n"
+            f"📦 <b>Accepted:</b> {len(clean_urls)} video links\n"
+            f"⏳ <i>Starting download & upload pipeline...</i>"
+            f"</blockquote>"
         )
         reply_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("🛑 Cancel Entire Album", callback_data=f"cancel_batch:{batch_id}")]
@@ -134,7 +132,7 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
     )
 
     ack_msg = await message.reply_text(
-        f"📥 **Accepted {len(clean_urls)} link(s)!**\nInitializing tasks in queue..."
+        f"<blockquote>📥 <b>Accepted {len(clean_urls)} link(s)</b>\n⏳ Initializing queue...</blockquote>"
     )
 
     for url in clean_urls:
@@ -145,16 +143,11 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
         ]) if InlineKeyboardMarkup and InlineKeyboardButton else None
 
         status_text = (
-            f"╭─────────────────────────────────────╮\n"
-            f"│   ⚡  T I M E P A S S   L E E C H   │\n"
-            f"╰─────────────────────────────────────╯\n"
-            f"╭─ 📂 MEDIA TARGET\n"
-            f"│ 🔗 Link: `{url[:45]}...`\n"
-            f"│ 🆔 Task: `{task_id[:8]}` • 🎥 *Video Player*\n"
-            f"╰─────────────────────────────────────\n"
-            f"╭─ ⚙️ ENGINE STATUS\n"
-            f"│ ⏳ <i>Waiting for worker slot in queue...</i>\n"
-            f"╰─────────────────────────────────────"
+            f"<blockquote>"
+            f"⚡ <b>TIMEPASS LEECH</b>\n"
+            f"🔗 <code>{url[:45]}...</code>\n"
+            f"⏳ <i>Waiting for worker slot in queue...</i>"
+            f"</blockquote>"
         )
 
         status_msg = await message.reply_text(
@@ -216,4 +209,4 @@ async def message_url_handler(client: Client, message: Message):
     if message.reply_to_message and message.reply_to_message.text:
         target_text += "\n" + message.reply_to_message.text
 
-    await process_submitted_urls(client, message, target_text, is_album=False)
+    await process_submitted_urls(client, message, target_text, is_album=None)

@@ -34,12 +34,24 @@ for item in raw_admins.replace(";", ",").split(","):
         ADMIN_IDS.add(int(clean_item))
 
 # Concurrency & Queue Configuration
-MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "4"))
-MAX_USER_TASKS = int(os.getenv("MAX_USER_TASKS", "20"))
-PROGRESS_UPDATE_INTERVAL = float(os.getenv("PROGRESS_UPDATE_INTERVAL", "4.0"))
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "6"))
+MAX_USER_TASKS = int(os.getenv("MAX_USER_TASKS", "30"))
+PROGRESS_UPDATE_INTERVAL = float(os.getenv("PROGRESS_UPDATE_INTERVAL", "3.0"))
 MIN_FREE_DISK_GB = float(os.getenv("MIN_FREE_DISK_GB", "3.0"))
-ARIA2_CONNECTIONS = int(os.getenv("ARIA2_CONNECTIONS", "8"))
-ALBUM_CONCURRENT_DOWNLOADS = int(os.getenv("ALBUM_CONCURRENT_DOWNLOADS", "2"))
+ARIA2_CONNECTIONS = int(os.getenv("ARIA2_CONNECTIONS", "16"))
+ALBUM_CONCURRENT_DOWNLOADS = int(os.getenv("ALBUM_CONCURRENT_DOWNLOADS", "4"))
+
+# Optional Cookies File for yt-dlp (Instagram, restricted YouTube, TikTok, X)
+COOKIES_FILE = None
+for candidate_cookie in [
+    ROOT_DIR / "cookies.txt",
+    Path.cwd() / "cookies.txt",
+    Path("/content/timepaas-bot/cookies.txt"),
+    Path("/content/cookies.txt")
+]:
+    if candidate_cookie.exists() and candidate_cookie.stat().st_size > 0:
+        COOKIES_FILE = str(candidate_cookie.resolve())
+        break
 
 # Paths & Directories
 DOWNLOAD_DIR = ROOT_DIR / os.getenv("DOWNLOAD_DIR", "downloads")

@@ -268,10 +268,9 @@ async def upload_video_albums(
             await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
             continue
 
-        media_group = []
         temp_thumbs = []
 
-        for v_path, caption in chunk:
+        async def prepare_media_item(v_path, caption):
             duration, width, height, has_audio = await get_video_metadata(v_path)
             if not has_audio:
                 v_path = await ensure_video_has_audio(v_path)
@@ -285,17 +284,18 @@ async def upload_video_albums(
                     temp_thumbs.append(thumb_to_use)
 
             actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
-            media_group.append(
-                InputMediaVideo(
-                    media=str(v_path),
-                    thumb=actual_thumb,
-                    caption=caption,
-                    duration=duration,
-                    width=width,
-                    height=height,
-                    supports_streaming=True
-                )
+            return InputMediaVideo(
+                media=str(v_path),
+                thumb=actual_thumb,
+                caption=caption,
+                duration=duration,
+                width=width,
+                height=height,
+                supports_streaming=True
             )
+
+        # Parallelize video probing and thumbnail generation across all pack videos
+        media_group = list(await asyncio.gather(*(prepare_media_item(vp, cap) for vp, cap in chunk)))
 
         async with _UPLOAD_SEMAPHORE:
             timeout_sec = max(300.0, len(chunk) * 60.0)

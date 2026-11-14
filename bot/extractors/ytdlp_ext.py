@@ -2,7 +2,7 @@ import asyncio
 import logging
 from urllib.parse import urlparse
 import yt_dlp
-from bot.config import DEFAULT_USER_AGENT
+from bot.config import DEFAULT_USER_AGENT, COOKIES_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +16,23 @@ def _ytdlp_extract_sync(url: str) -> dict:
         "quiet": True,
         "no_warnings": True,
         "simulate": True,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+        "geo_bypass": True,
+        "nocheckcertificate": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"]
+            }
+        },
         "http_headers": {
             "User-Agent": DEFAULT_USER_AGENT,
             "Referer": referer,
         },
     }
+
+    if COOKIES_FILE:
+        ydl_opts["cookiefile"] = COOKIES_FILE
+        logger.info(f"Loaded cookies file for yt-dlp: {COOKIES_FILE}")
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

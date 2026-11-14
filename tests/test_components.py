@@ -5,6 +5,12 @@ Unit test suite verifying component logic:
 3. Archive format recognition
 """
 
+import asyncio
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 import unittest
 from pathlib import Path
 from bot.core.progress import format_size, format_time, generate_bar
@@ -281,12 +287,13 @@ class TestComponents(unittest.TestCase):
 
         asyncio.run(run_dash())
         self.assertEqual(len(edited_texts), 1)
+        self.assertIn("<blockquote>", edited_texts[0])
+        self.assertIn("</blockquote>", edited_texts[0])
         self.assertIn("Episode_01.mp4", edited_texts[0])
         self.assertIn("Episode_02.mp4", edited_texts[0])
         self.assertIn("12.50 MB/s", edited_texts[0])
         self.assertIn("15.00 MB/s", edited_texts[0])
-        self.assertIn("╭─", edited_texts[0])
-        self.assertIn("╰─", edited_texts[0])
+        self.assertIn("ALBUM PIPELINE", edited_texts[0])
 
     def test_generate_smooth_bar(self):
         from bot.core.progress import generate_smooth_bar
@@ -307,7 +314,7 @@ class TestComponents(unittest.TestCase):
         self.assertIn("73.0%", bar_73)
         self.assertIn("█" * 7, bar_73)
 
-    def test_update_status_message_curved_widget(self):
+    def test_update_status_message_blockquote_widget(self):
         import asyncio
         from bot.core.progress import update_status_message
 
@@ -336,10 +343,31 @@ class TestComponents(unittest.TestCase):
 
         asyncio.run(run())
         self.assertEqual(len(edited_texts), 1)
-        self.assertIn("╭─", edited_texts[0])
-        self.assertIn("╰─", edited_texts[0])
+        self.assertIn("<blockquote>", edited_texts[0])
+        self.assertIn("</blockquote>", edited_texts[0])
+        self.assertIn("TIMEPASS LEECH", edited_texts[0])
         self.assertIn("TestVideo.mp4", edited_texts[0])
         self.assertIsNotNone(markups[0])
+
+    def test_additional_video_hosts_domain_matching(self):
+        from bot.extractors.video_hosts import (
+            is_matching_host,
+            FILEMOON_DOMAINS,
+            VOE_DOMAINS,
+            MP4UPLOAD_DOMAINS,
+            VIDGUARD_DOMAINS,
+            GOFILE_DOMAINS,
+            KRAKENFILES_DOMAINS,
+            PIXELDRAIN_DOMAINS
+        )
+        self.assertTrue(is_matching_host("filemoon.sx", FILEMOON_DOMAINS))
+        self.assertTrue(is_matching_host("voe.sx", VOE_DOMAINS))
+        self.assertTrue(is_matching_host("mp4upload.com", MP4UPLOAD_DOMAINS))
+        self.assertTrue(is_matching_host("vidguard.to", VIDGUARD_DOMAINS))
+        self.assertTrue(is_matching_host("gofile.io", GOFILE_DOMAINS))
+        self.assertTrue(is_matching_host("krakenfiles.com", KRAKENFILES_DOMAINS))
+        self.assertTrue(is_matching_host("pixeldrain.com", PIXELDRAIN_DOMAINS))
+        self.assertFalse(is_matching_host("unknownrandomhost.xyz", FILEMOON_DOMAINS))
 
 
 if __name__ == "__main__":
