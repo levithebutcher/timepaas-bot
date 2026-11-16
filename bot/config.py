@@ -53,6 +53,15 @@ for candidate_cookie in [
         COOKIES_FILE = str(candidate_cookie.resolve())
         break
 
+# Dump Channel / Group Configuration (Option B Relay)
+raw_dump = os.getenv("DUMP_CHANNEL_ID", "").strip().strip('"\'')
+DUMP_CHANNEL_ID = None
+if raw_dump:
+    try:
+        DUMP_CHANNEL_ID = int(raw_dump)
+    except ValueError:
+        DUMP_CHANNEL_ID = raw_dump
+
 # Paths & Directories
 DOWNLOAD_DIR = ROOT_DIR / os.getenv("DOWNLOAD_DIR", "downloads")
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)

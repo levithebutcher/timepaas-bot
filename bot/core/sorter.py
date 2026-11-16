@@ -1,4 +1,5 @@
 import re
+import math
 import logging
 from urllib.parse import urlparse, unquote
 
@@ -95,3 +96,27 @@ def natural_sort_urls(urls: list[str]) -> list[str]:
     except Exception as e:
         logger.warning(f"natural_sort_urls safely falling back to original submission order: {e}")
         return list(urls)
+
+
+def split_into_album_chunks(items: list, max_size: int = 10, min_size: int = 2) -> list[list]:
+    """
+    Splits items into balanced album packs (between min_size and max_size).
+    Guarantees no orphan single items remain when total items >= 2.
+    Example:
+      11 items -> [6, 5] (instead of 10 + 1)
+      21 items -> [7, 7, 7] (instead of 10 + 10 + 1)
+    """
+    n = len(items)
+    if n <= max_size:
+        return [items]
+
+    num_chunks = math.ceil(n / max_size)
+    base_size = n // num_chunks
+    rem = n % num_chunks
+    chunks = []
+    start = 0
+    for i in range(num_chunks):
+        sz = base_size + (1 if i < rem else 0)
+        chunks.append(items[start:start + sz])
+        start += sz
+    return chunks

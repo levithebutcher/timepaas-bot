@@ -30,9 +30,10 @@ from bot.core.progress import (
 from bot.core.downloader import download_direct_stream, download_m3u8_stream, derive_filename
 from bot.core.splitter import split_video_file
 from bot.core.archive_manager import is_archive_file, extract_archive
-from bot.core.uploader import upload_file, upload_photo_albums, upload_video_albums
+from bot.core.uploader import upload_file, upload_photo_albums, upload_video_albums, upload_single_to_dump, deliver_dumped_album
 from bot.extractors.manager import extract_media_link
-from bot.database import get_user_settings
+from bot.database import get_user_settings, get_dump_channel
+from bot.core.sorter import split_into_album_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -536,10 +537,12 @@ class QueueManager:
         """
         batch.status_msg_id = status_msg_id
         total_files = len(urls)
-        chunk_size = 10
-        chunks = [urls[i:i + chunk_size] for i in range(0, total_files, chunk_size)]
+        # Option A: Smart mathematically balanced album chunks (no orphan 1-file chunk)
+        chunks = split_into_album_chunks(urls, max_size=10, min_size=2)
         total_albums = len(chunks)
         user_settings = await get_user_settings(batch.user_id)
+        # Option B: Check if high-speed Dump Channel relay is configured
+        dump_channel = await get_dump_channel()
 
         # Track user task load
         curr_load = self._user_task_counts.get(batch.user_id, 0)
@@ -620,7 +623,12 @@ class QueueManager:
                         await refresh_dashboard(force=True)
 
                         try:
-                            media_info = await extract_media_link(url)
+                            # Fast-Fail 45s extraction timeout: prevents dead/unresponsive hosts from freezing the queue
+                            try:
+                                media_info = await asyncio.wait_for(extract_media_link(url), timeout=45.0)
+                            except asyncio.TimeoutError:
+                                raise RuntimeError("Extraction timed out after 45s (host unresponsive).")
+
                             if not media_info or not media_info.get("url"):
                                 raise RuntimeError("Could not resolve video stream from page.")
 
@@ -689,9 +697,42 @@ class QueueManager:
                                 )
 
                             caption = user_settings.get("custom_caption") or f"🎬 `{dl_file.name}`"
-                            async with dl_lock:
-                                downloaded_items.append((dl_file, caption, item_idx))
-                                batch.done_count += 1
+
+                            # Option B (Dump Relay Mode): Upload immediately and clear local disk
+                            if dump_channel:
+                                try:
+                                    async with dl_lock:
+                                        active_dls[item_idx] = {
+                                            "file_name": f"Relaying {title[:22]}...",
+                                            "current": dl_file.stat().st_size if dl_file.exists() else 0,
+                                            "total": dl_file.stat().st_size if dl_file.exists() else 0,
+                                            "speed_str": "Relaying",
+                                            "eta_str": "--",
+                                            "item_num": item_idx + 1,
+                                            "chunk_total": len(chunk_urls)
+                                        }
+                                    await refresh_dashboard(force=True)
+
+                                    dump_info = await upload_single_to_dump(
+                                        client=client,
+                                        dump_chat_id=dump_channel,
+                                        file_path=dl_file,
+                                        caption=caption,
+                                        custom_thumb=user_settings.get("custom_thumb")
+                                    )
+                                    async with dl_lock:
+                                        downloaded_items.append((dump_info, caption, item_idx))
+                                        batch.done_count += 1
+                                except Exception as dump_err:
+                                    logger.warning(f"Dump relay failed for {title} ({dump_err}), keeping local file...")
+                                    async with dl_lock:
+                                        downloaded_items.append((dl_file, caption, item_idx))
+                                        batch.done_count += 1
+                            else:
+                                # Option A: Keep local file for double-buffered album batching
+                                async with dl_lock:
+                                    downloaded_items.append((dl_file, caption, item_idx))
+                                    batch.done_count += 1
 
                         except asyncio.CancelledError:
                             batch.cancelled_count += 1
@@ -740,13 +781,26 @@ class QueueManager:
                         }
                         await refresh_dashboard(force=True)
                         try:
-                            await upload_video_albums(
-                                client=client,
-                                chat_id=batch.chat_id,
-                                video_items=items,
-                                custom_thumb=user_settings.get("custom_thumb"),
-                                chunk_size=10
-                            )
+                            # If items are already in dump channel (Option B), deliver server-to-server instantly!
+                            if dump_channel and isinstance(items[0][0], dict):
+                                dumped_list = [item[0] for item in items]
+                                await deliver_dumped_album(
+                                    client=client,
+                                    target_chat_id=batch.chat_id,
+                                    dump_chat_id=dump_channel,
+                                    dumped_items=dumped_list
+                                )
+                            else:
+                                # Option A: Local double-buffer upload
+                                valid_files = [(item[0], item[1]) for item in items if isinstance(item[0], Path) and item[0].exists()]
+                                if valid_files:
+                                    await upload_video_albums(
+                                        client=client,
+                                        chat_id=batch.chat_id,
+                                        video_items=valid_files,
+                                        custom_thumb=user_settings.get("custom_thumb"),
+                                        chunk_size=10
+                                    )
                             uploaded_albums += 1
                         except Exception as ex:
                             logger.error(f"Error uploading video album {alb_idx + 1}: {ex}")

@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 # Concurrency semaphore to avoid overloading Telegram MTProto DC5 media socket with too many simultaneous uploads
 _UPLOAD_SEMAPHORE = asyncio.Semaphore(1)
+# Concurrency semaphore to prevent multiple ffmpeg/ffprobe tasks from pinning CPU at 100%
+_METADATA_SEMAPHORE = asyncio.Semaphore(2)
 
 
 async def get_video_metadata(file_path: Path) -> tuple[int, int, int, bool]:
@@ -271,30 +273,33 @@ async def upload_video_albums(
         temp_thumbs = []
 
         async def prepare_media_item(v_path, caption):
-            duration, width, height, has_audio = await get_video_metadata(v_path)
-            if not has_audio:
-                v_path = await ensure_video_has_audio(v_path)
+            async with _METADATA_SEMAPHORE:
                 duration, width, height, has_audio = await get_video_metadata(v_path)
+                if not has_audio:
+                    file_path = await ensure_video_has_audio(v_path)
+                    duration, width, height, has_audio = await get_video_metadata(file_path)
+                else:
+                    file_path = v_path
 
-            thumb_to_use = custom_thumb if custom_thumb and Path(custom_thumb).exists() else None
-            if not thumb_to_use:
-                gen_thumb = v_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{v_path.stem}.jpg"
-                thumb_to_use = await generate_thumbnail(v_path, gen_thumb, duration)
-                if thumb_to_use:
-                    temp_thumbs.append(thumb_to_use)
+                thumb_to_use = custom_thumb if custom_thumb and Path(custom_thumb).exists() else None
+                if not thumb_to_use:
+                    gen_thumb = file_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{file_path.stem}.jpg"
+                    thumb_to_use = await generate_thumbnail(file_path, gen_thumb, duration)
+                    if thumb_to_use:
+                        temp_thumbs.append(thumb_to_use)
 
-            actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
-            return InputMediaVideo(
-                media=str(v_path),
-                thumb=actual_thumb,
-                caption=caption,
-                duration=duration,
-                width=width,
-                height=height,
-                supports_streaming=True
-            )
+                actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
+                return InputMediaVideo(
+                    media=str(file_path),
+                    thumb=actual_thumb,
+                    caption=caption,
+                    duration=duration,
+                    width=width,
+                    height=height,
+                    supports_streaming=True
+                )
 
-        # Parallelize video probing and thumbnail generation across all pack videos
+        # Parallelize video probing and thumbnail generation across all pack videos (capped by _METADATA_SEMAPHORE)
         media_group = list(await asyncio.gather(*(prepare_media_item(vp, cap) for vp, cap in chunk)))
 
         async with _UPLOAD_SEMAPHORE:
@@ -316,8 +321,128 @@ async def upload_video_albums(
             finally:
                 for t in temp_thumbs:
                     remove_path(t)
-                for t in temp_thumbs:
-                    remove_path(t)
+
+
+async def upload_single_to_dump(
+    client,
+    dump_chat_id: int | str,
+    file_path: Path,
+    caption: str = "",
+    custom_thumb: str = None
+) -> dict:
+    """
+    Uploads a single video directly to the designated Dump Channel / Group (Option B).
+    Immediately deletes the local video file from disk upon successful upload to prevent
+    disk space buildup. Returns media descriptors including Telegram server-side file_id.
+    """
+    if not file_path.exists() or file_path.stat().st_size == 0:
+        raise FileNotFoundError(f"File to upload does not exist or is empty: {file_path}")
+
+    thumb_to_use = None
+    generated_thumb = None
+    if custom_thumb and Path(custom_thumb).exists():
+        thumb_to_use = custom_thumb
+
+    async with _METADATA_SEMAPHORE:
+        duration, width, height, has_audio = await get_video_metadata(file_path)
+        if not has_audio:
+            file_path = await ensure_video_has_audio(file_path)
+            duration, width, height, has_audio = await get_video_metadata(file_path)
+
+        if not thumb_to_use:
+            generated_thumb = file_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{file_path.stem}.jpg"
+            thumb_to_use = await generate_thumbnail(file_path, generated_thumb, duration)
+
+    actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
+
+    async with _UPLOAD_SEMAPHORE:
+        try:
+            sent = await client.send_video(
+                chat_id=dump_chat_id,
+                video=str(file_path),
+                caption=caption,
+                duration=duration,
+                width=width,
+                height=height,
+                thumb=actual_thumb,
+                supports_streaming=True
+            )
+        finally:
+            if generated_thumb and generated_thumb.exists():
+                remove_path(generated_thumb)
+            # Immediately delete local video file to free disk!
+            remove_path(file_path)
+
+    file_id = sent.video.file_id if sent.video else (sent.document.file_id if sent.document else None)
+    thumb_id = sent.video.thumbs[0].file_id if (sent.video and sent.video.thumbs) else None
+
+    return {
+        "file_id": file_id,
+        "thumb_id": thumb_id,
+        "caption": caption,
+        "duration": duration,
+        "width": width,
+        "height": height,
+        "msg_id": sent.id
+    }
+
+
+async def deliver_dumped_album(
+    client,
+    target_chat_id: int,
+    dump_chat_id: int | str,
+    dumped_items: list[dict]
+):
+    """
+    Delivers video album to user referencing files already on Telegram servers (Option B).
+    Lightning-fast server-to-server delivery with zero local network re-upload.
+    """
+    if not dumped_items:
+        return
+
+    if len(dumped_items) == 1:
+        item = dumped_items[0]
+        try:
+            await client.copy_messages(
+                chat_id=target_chat_id,
+                from_chat_id=dump_chat_id,
+                message_ids=item["msg_id"]
+            )
+        except Exception:
+            await client.send_video(
+                chat_id=target_chat_id,
+                video=item["file_id"],
+                caption=item["caption"],
+                duration=item["duration"],
+                width=item["width"],
+                height=item["height"],
+                supports_streaming=True
+            )
+        return
+
+    # Group into media group using Telegram file_ids
+    media_group = [
+        InputMediaVideo(
+            media=item["file_id"],
+            caption=item["caption"],
+            duration=item["duration"],
+            width=item["width"],
+            height=item["height"],
+            supports_streaming=True
+        )
+        for item in dumped_items
+    ]
+
+    try:
+        await client.send_media_group(chat_id=target_chat_id, media=media_group)
+    except Exception as e:
+        logger.warning(f"send_media_group with file_ids failed ({e}); falling back to copy_messages")
+        msg_ids = [item["msg_id"] for item in dumped_items]
+        await client.copy_messages(
+            chat_id=target_chat_id,
+            from_chat_id=dump_chat_id,
+            message_ids=msg_ids
+        )
 
 
 async def upload_photo_albums(client, chat_id: int, image_paths: list[Path]):

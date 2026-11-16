@@ -1,11 +1,12 @@
 import asyncio
 import logging
 import sys
+import argparse
 from pyrogram import Client
 from bot.config import API_ID, API_HASH, BOT_TOKEN, STREAMTAPE_LOGIN, STREAMTAPE_KEY
 from bot.core.cleaner import clean_temp_directories
 from bot.core.queue_manager import queue_manager
-from bot.database import init_db
+from bot.database import init_db, set_dump_channel, get_dump_channel
 
 # Configure structured logging
 logging.basicConfig(
@@ -34,10 +35,20 @@ def create_bot_client() -> Client:
     return app
 
 
-async def run_app():
+async def run_app(dump_cli=None):
     """Main async application loop."""
     logger.info("Initializing database...")
     await init_db()
+
+    if dump_cli:
+        logger.info(f"Setting Dump Channel from command line argument: {dump_cli}")
+        await set_dump_channel(dump_cli)
+
+    dump_channel = await get_dump_channel()
+    if dump_channel:
+        logger.info(f"Dump Channel active: {dump_channel} (Option B Relay Enabled)")
+    else:
+        logger.info("No Dump Channel configured. Direct Local Pipeline active (Option A)")
 
     logger.info("Cleaning leftover temporary files...")
     clean_temp_directories()
@@ -60,6 +71,15 @@ async def run_app():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Timepass Leech & Downloader Bot")
+    parser.add_argument(
+        "--dump", "--dump-channel", "--channel",
+        dest="dump_channel",
+        help="Dump Channel or Group ID/Username for Option B Relay",
+        default=None
+    )
+    args, _ = parser.parse_known_args()
+
     logger.info("==========================================")
     logger.info("Starting Timepass Leech & Downloader Bot...")
     logger.info("==========================================")
@@ -69,7 +89,7 @@ def main():
     asyncio.set_event_loop(loop)
 
     try:
-        loop.run_until_complete(run_app())
+        loop.run_until_complete(run_app(dump_cli=args.dump_channel))
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot shutdown requested. Goodbye!")
     finally:

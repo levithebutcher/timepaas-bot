@@ -19,7 +19,14 @@ except ImportError:
     })
     Message = object
 from bot.config import ADMIN_IDS, DOWNLOAD_DIR
-from bot.database import set_user_thumb, clear_user_thumb, set_user_caption, get_user_settings
+from bot.database import (
+    set_user_thumb,
+    clear_user_thumb,
+    set_user_caption,
+    get_user_settings,
+    get_dump_channel,
+    set_dump_channel
+)
 from bot.core.queue_manager import queue_manager
 
 logger = logging.getLogger(__name__)
@@ -67,7 +74,10 @@ async def help_handler(client: Client, message: Message):
         "• <code>/cancelall</code> — Cancel all active tasks\n"
         "• <code>/setthumb</code> — Reply to image to set thumbnail\n"
         "• <code>/clearthumb</code> — Reset thumbnail\n"
-        "• <code>/setcaption &lt;text&gt;</code> — Set custom caption"
+        "• <code>/setcaption &lt;text&gt;</code> — Set custom caption\n"
+        "• <code>/setdump &lt;id&gt;</code> — Configure Dump Channel (Option B Relay)\n"
+        "• <code>/cleardump</code> — Clear Dump Channel\n"
+        "• <code>/dump</code> — View Dump Channel status"
         "</blockquote>"
     )
     await message.reply_text(text)
@@ -159,3 +169,96 @@ async def setcaption_handler(client: Client, message: Message):
     caption = parts[1].strip()
     await set_user_caption(message.from_user.id, caption)
     await message.reply_text(f"✅ **Custom caption template saved:**\n`{caption}`")
+
+
+@Client.on_message(filters.command(["setdump", "setchannel"]) & filters.private)
+async def setdump_handler(client: Client, message: Message):
+    if not is_authorized(message.from_user.id):
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.reply_text(
+            "<blockquote>"
+            "⚠️ <b>Usage:</b> <code>/setdump &lt;channel_id or @username&gt;</code>\n\n"
+            "<b>Example:</b> <code>/setdump -1001234567890</code>\n\n"
+            "<i>Note: Make sure the bot is an Administrator in that channel/group with Post Messages permissions!</i>"
+            "</blockquote>"
+        )
+        return
+
+    target = parts[1].strip()
+    try:
+        try:
+            target_id = int(target)
+        except ValueError:
+            target_id = target
+
+        chat = await client.get_chat(target_id)
+        await set_dump_channel(chat.id)
+        await message.reply_text(
+            f"<blockquote>"
+            f"✅ <b>DUMP CHANNEL CONFIGURED!</b>\n\n"
+            f"• <b>Title:</b> {chat.title}\n"
+            f"• <b>ID:</b> <code>{chat.id}</code>\n"
+            f"• <b>Mode:</b> Server-to-Server High Speed Relay (Option B)\n\n"
+            f"<i>Video albums will now be uploaded to this channel and delivered instantly to chats with zero local disk bloat!</i>"
+            f"</blockquote>"
+        )
+    except Exception as e:
+        logger.error(f"Failed to configure dump channel {target}: {e}")
+        await message.reply_text(
+            f"<blockquote>"
+            f"❌ <b>Could Not Connect to Channel</b>\n\n"
+            f"<b>Error:</b> <code>{e}</code>\n\n"
+            f"<i>Please verify the ID and ensure the Bot is an Admin in the channel with Post Messages permission!</i>"
+            f"</blockquote>"
+        )
+
+
+@Client.on_message(filters.command(["dump", "getdump"]) & filters.private)
+async def getdump_handler(client: Client, message: Message):
+    if not is_authorized(message.from_user.id):
+        return
+
+    dump_id = await get_dump_channel()
+    if not dump_id:
+        await message.reply_text(
+            "<blockquote>"
+            "📢 <b>DUMP CHANNEL STATUS</b>\n\n"
+            "• <b>Status:</b> Not configured\n"
+            "• <b>Active Mode:</b> Direct Local Pipeline (Option A)\n\n"
+            "💡 <i>Tip: Send <code>/setdump -100xxxxxxxxxx</code> to enable instant zero-disk server relay!</i>"
+            "</blockquote>"
+        )
+        return
+
+    try:
+        chat = await client.get_chat(dump_id)
+        title = chat.title
+    except Exception:
+        title = "Connected"
+
+    await message.reply_text(
+        f"<blockquote>"
+        f"📢 <b>DUMP CHANNEL STATUS</b>\n\n"
+        f"• <b>Title:</b> {title}\n"
+        f"• <b>ID:</b> <code>{dump_id}</code>\n"
+        f"• <b>Active Mode:</b> Server-to-Server Instant Relay (Option B)\n\n"
+        f"<i>Send <code>/cleardump</code> anytime to switch back to direct local pipeline.</i>"
+        f"</blockquote>"
+    )
+
+
+@Client.on_message(filters.command("cleardump") & filters.private)
+async def cleardump_handler(client: Client, message: Message):
+    if not is_authorized(message.from_user.id):
+        return
+
+    await set_dump_channel(None)
+    await message.reply_text(
+        "<blockquote>"
+        "🗑️ <b>DUMP CHANNEL CLEARED</b>\n\n"
+        "Bot has reverted to <b>Direct Local Pipeline (Option A)</b>."
+        "</blockquote>"
+    )

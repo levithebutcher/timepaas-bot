@@ -1,6 +1,6 @@
 import aiosqlite
 from pathlib import Path
-from bot.config import DATABASE_PATH
+from bot.config import DATABASE_PATH, DUMP_CHANNEL_ID
 
 
 async def init_db():
@@ -12,6 +12,12 @@ async def init_db():
                 custom_thumb TEXT,
                 custom_caption TEXT,
                 auto_extract_zip INTEGER DEFAULT 1
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
             )
         """)
         await db.execute("""
@@ -78,4 +84,35 @@ async def set_user_caption(user_id: int, caption_template: str):
             VALUES (?, ?)
             ON CONFLICT(user_id) DO UPDATE SET custom_caption = excluded.custom_caption
         """, (user_id, caption_template))
+        await db.commit()
+
+
+async def get_dump_channel() -> int | str | None:
+    """Retrieves dump channel ID from database, falling back to DUMP_CHANNEL_ID config."""
+    try:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("SELECT value FROM bot_settings WHERE key = 'dump_channel_id'") as cursor:
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    val = str(row[0]).strip()
+                    try:
+                        return int(val)
+                    except ValueError:
+                        return val
+    except Exception:
+        pass
+    return DUMP_CHANNEL_ID
+
+
+async def set_dump_channel(channel_id: int | str | None):
+    """Updates or clears the dump channel ID in the database."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        if channel_id is None:
+            await db.execute("DELETE FROM bot_settings WHERE key = 'dump_channel_id'")
+        else:
+            await db.execute("""
+                INSERT INTO bot_settings (key, value)
+                VALUES ('dump_channel_id', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """, (str(channel_id).strip(),))
         await db.commit()
