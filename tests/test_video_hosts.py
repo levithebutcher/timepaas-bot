@@ -16,7 +16,9 @@ from bot.extractors.video_hosts import (
     MIXDROP_DOMAINS,
     STREAMWISH_DOMAINS,
     FILELIONS_DOMAINS,
-    LULUSTREAM_DOMAINS
+    LULUSTREAM_DOMAINS,
+    EPORNER_DOMAINS,
+    calc_eporner_hash
 )
 
 
@@ -55,11 +57,23 @@ class TestVideoHosts(unittest.TestCase):
         self.assertTrue(is_matching_host("streamwish.to", STREAMWISH_DOMAINS))
         self.assertTrue(is_matching_host("filelions.com", FILELIONS_DOMAINS))
 
+        # Eporner
+        self.assertTrue(is_matching_host("eporner.com", EPORNER_DOMAINS))
+        self.assertTrue(is_matching_host("www.eporner.com", EPORNER_DOMAINS))
+        self.assertTrue(is_matching_host("sub.eporner.net", EPORNER_DOMAINS))
+
         # Non-matching
         self.assertFalse(is_matching_host("youtube.com", STREAMTAPE_DOMAINS))
         self.assertFalse(is_matching_host("google.com", DOOD_DOMAINS))
         self.assertFalse(is_streamtape_host("randomsite.xyz"))
         self.assertFalse(is_luluvid_host("randomsite.xyz"))
+
+    def test_eporner_hash_calculation(self):
+        sample_hash = "abcdef0123456789abcdef0123456789"
+        calculated = calc_eporner_hash(sample_hash)
+        self.assertIsInstance(calculated, str)
+        self.assertGreater(len(calculated), 10)
+        self.assertEqual(calculated, "1bo3u2p9sba151bo3u2p9sba15")
 
     def test_dean_edwards_unpacker_multiblock(self):
         sample = (

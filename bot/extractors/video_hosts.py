@@ -100,6 +100,11 @@ PIXELDRAIN_DOMAINS = {
     "pixeldrain.com", "www.pixeldrain.com"
 }
 
+EPORNER_DOMAINS = {
+    "eporner.com", "www.eporner.com", "eporner.net", "eporner.org",
+    "eporner.tv", "eporner.xxx"
+}
+
 
 def unpack_dean_edwards(payload: str) -> str:
     """
@@ -960,6 +965,162 @@ async def resolve_pixeldrain(url: str) -> dict:
     return None
 
 
+def encode_base_n(num: int, n: int = 36) -> str:
+    """Encodes an integer into base-n alphanumeric string."""
+    table = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if num == 0:
+        return table[0]
+    ret = []
+    while num > 0:
+        ret.append(table[num % n])
+        num //= n
+    return "".join(reversed(ret))
+
+
+def calc_eporner_hash(vid_hash: str) -> str:
+    """Computes Eporner XHR auth token from 32-hex hash."""
+    return "".join(encode_base_n(int(vid_hash[lb:lb + 8], 16), 36) for lb in range(0, 32, 8))
+
+
+async def resolve_eporner(url: str) -> dict:
+    """
+    Tier-0 Direct Resolver for Eporner:
+    1. Extracts video ID and queries web page.
+    2. Computes XHR auth hash and calls official /xhr/video/{video_id} JSON API.
+    3. Selects best quality direct MP4 (1080p, 720p, 480p) or HLS master playlist.
+    4. Fallback: Extracts HTML5 video tag, download button, or Playwright sniffer.
+    """
+    m = re.search(r"(?:video-|/video/|/embed/|/hd-porn/|/dload/)([a-zA-Z0-9]+)", url)
+    video_id = m.group(1) if m else None
+
+    parsed = urlparse(url)
+    domain = parsed.netloc if parsed.netloc else "www.eporner.com"
+    target_page_url = f"https://{domain}/video-{video_id}/" if video_id else url
+
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": f"https://{domain}/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+
+    title = f"eporner_{video_id or 'video'}.mp4"
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(target_page_url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    logger.debug(f"Eporner page returned HTTP {resp.status} for {target_page_url}")
+                    return None
+                html = await resp.text()
+
+            # Extract title
+            title_m = re.search(r"<title>(.*?)\s*-\s*EPORNER", html, re.IGNORECASE)
+            if not title_m:
+                title_m = re.search(r'<meta property="og:title"\s*content="([^"]+)"', html)
+            if title_m:
+                raw_t = title_m.group(1).strip()
+                clean_t = re.sub(r"[^\w\s\.\-]", "", raw_t).strip().replace(" ", "_")
+                if clean_t:
+                    title = clean_t if clean_t.lower().endswith(".mp4") else f"{clean_t}.mp4"
+
+            # 1. Official XHR API resolution using reverse-engineered calc_hash
+            hash_m = re.search(r'hash\s*[:=]\s*["\']([\da-f]{32})["\']', html)
+            if hash_m and video_id:
+                vid_hash = hash_m.group(1)
+                calculated_token = calc_eporner_hash(vid_hash)
+                xhr_url = f"https://{domain}/xhr/video/{video_id}"
+                xhr_params = {
+                    "hash": calculated_token,
+                    "device": "generic",
+                    "domain": domain,
+                    "fallback": "false"
+                }
+                xhr_headers = {
+                    "User-Agent": DEFAULT_USER_AGENT,
+                    "Referer": target_page_url,
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json, text/javascript, */*; q=0.01"
+                }
+                try:
+                    async with session.get(xhr_url, params=xhr_params, headers=xhr_headers) as xhr_resp:
+                        if xhr_resp.status == 200:
+                            data = await xhr_resp.json()
+                            if data.get("available") is not False:
+                                sources = data.get("sources", {})
+                                stream_url = None
+                                stream_type = "direct"
+
+                                # Priority: highest quality direct mp4
+                                mp4_dict = sources.get("mp4", {})
+                                if isinstance(mp4_dict, dict):
+                                    for res_key in ("1080p", "720p", "480p", "360p", "240p"):
+                                        if res_key in mp4_dict and isinstance(mp4_dict[res_key], dict):
+                                            stream_url = mp4_dict[res_key].get("src")
+                                            if stream_url:
+                                                stream_type = "direct"
+                                                logger.info(f"Eporner resolved {res_key} direct stream: {stream_url[:50]}...")
+                                                break
+
+                                # Fallback: HLS master playlist
+                                if not stream_url:
+                                    hls_dict = sources.get("hls", {})
+                                    if isinstance(hls_dict, dict):
+                                        auto_hls = hls_dict.get("auto", {})
+                                        if isinstance(auto_hls, dict):
+                                            stream_url = auto_hls.get("src")
+                                            stream_type = "m3u8"
+
+                                if stream_url:
+                                    return {
+                                        "type": stream_type,
+                                        "url": stream_url,
+                                        "title": title,
+                                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": target_page_url}
+                                    }
+                except Exception as e:
+                    logger.debug(f"Eporner XHR API failed: {e}")
+
+            # 2. HTML Video tag & download button inspection
+            vid_tag_m = re.search(r'<video[^>]+src=["\']([^"\']+)["\']', html)
+            if vid_tag_m:
+                v_url = vid_tag_m.group(1)
+                return {
+                    "type": "m3u8" if ".m3u8" in v_url else "direct",
+                    "url": v_url,
+                    "title": title,
+                    "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": target_page_url}
+                }
+
+            # 3. Direct download link in page (/dload/...)
+            dload_m = re.search(r'href=["\'](/dload/[^"\']+)["\']', html)
+            if dload_m:
+                full_dload = f"https://{domain}" + dload_m.group(1)
+                return {
+                    "type": "direct",
+                    "url": full_dload,
+                    "title": title,
+                    "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": target_page_url}
+                }
+
+    except Exception as e:
+        logger.debug(f"Eporner static resolver failed for {url}: {e}")
+
+    # 4. Playwright Fallback
+    try:
+        from bot.extractors.browser_ext import extract_with_playwright
+        logger.info(f"Triggering Playwright fallback for Eporner: {url}")
+        res = await extract_with_playwright(url)
+        if res and res.get("url"):
+            res["title"] = title
+            return res
+    except Exception as e:
+        logger.debug(f"Playwright fallback failed for Eporner: {e}")
+
+    return None
+
+
 async def extract_from_video_hosts(url: str) -> dict:
     """
     Tier-0 Router: Checks if URL belongs to any specialized video hosting provider.
@@ -1026,5 +1187,9 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_matching_host(netloc, PIXELDRAIN_DOMAINS):
         logger.info(f"Target recognized as Pixeldrain: {url}")
         return await resolve_pixeldrain(url)
+
+    if is_matching_host(netloc, EPORNER_DOMAINS) or "eporner" in netloc.lower():
+        logger.info(f"Target recognized as Eporner: {url}")
+        return await resolve_eporner(url)
 
     return None
