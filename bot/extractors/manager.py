@@ -2,7 +2,7 @@ import logging
 from urllib.parse import urlparse
 from bot.extractors.video_hosts import extract_from_video_hosts
 from bot.extractors.ytdlp_ext import extract_with_ytdlp
-from bot.extractors.bs4_ext import extract_with_bs4
+from bot.extractors.general_ext import extract_from_general_website
 from bot.extractors.browser_ext import extract_with_playwright
 
 logger = logging.getLogger(__name__)
@@ -16,11 +16,11 @@ DIRECT_EXTENSIONS = {
 async def extract_media_link(url: str) -> dict:
     """
     Sequentially resolves target video/archive from a page URL:
-    0. Specialized Video Hosts (Streamtape, Doodstream, Mixdrop, Streamwish, FileLions)
+    0. Specialized Video Hosts (Streamtape, Doodstream, Mixdrop, Streamwish, FileLions, Lulu, etc.)
     1. Direct file link check (verifying it's not a web player page)
-    2. yt-dlp native extraction
-    3. BeautifulSoup4 HTML tag search
-    4. Playwright headless network sniffer
+    2. yt-dlp native extraction (YouTube, Twitter, Reddit, Instagram, Facebook, TikTok, 1000+ sites)
+    3. Universal General Website Extractor (HTML5, OpenGraph, JSON-LD, iframes, JWPlayer, packed JS)
+    4. Playwright headless network sniffer (dynamic JS / SPA / Cloudflare protected pages)
     """
     clean_path = urlparse(url).path.lower()
 
@@ -57,11 +57,11 @@ async def extract_media_link(url: str) -> dict:
             logger.warning(f"Aborting downstream extractors for {url}: {result.get('error')}")
             raise RuntimeError(result.get("error"))
 
-    # 3. Try BeautifulSoup
-    logger.info(f"[Tier 2] Falling back to BeautifulSoup4 for {url}")
-    result = await extract_with_bs4(url)
+    # 3. Universal General Website Extractor
+    logger.info(f"[Tier 2] Running Universal General Website Extractor for {url}")
+    result = await extract_from_general_website(url)
     if result and result.get("url"):
-        logger.info(f"[Tier 2] BeautifulSoup4 extracted stream: {result.get('title')}")
+        logger.info(f"[Tier 2] General Website Extractor extracted stream: {result.get('title')}")
         return result
 
     # 4. Try Playwright
