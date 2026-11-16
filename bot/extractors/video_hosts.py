@@ -12,8 +12,19 @@ logger = logging.getLogger(__name__)
 
 # Known domain patterns for video hosting providers
 STREAMTAPE_DOMAINS = {
-    "streamtape.com", "streamtape.to", "streamtape.net", "streamta.pe",
-    "strtape.tech", "strtapeadblocker.xyz", "streamadblocker.xyz", "strcloud.link"
+    # Official & Primary Mirrors
+    "streamtape.com", "streamtape.to", "streamtape.net", "streamtape.xyz",
+    "streamtape.site", "streamtape.cc", "streamta.pe", "streamta.com", "streamta.xyz",
+    # Shorthand Strtape / Strcloud
+    "strtape.tech", "strtape.com", "strtape.xyz", "strtape.site", "strtape.net", "strtape.link",
+    "strcloud.link", "strcloud.in", "strcloud.club", "strcloud.xyz",
+    # Taped / Tape mirrors (e.g. tapedstream)
+    "tapedstream.com", "tapedstream.xyz", "tapedstream.net", "tapestream.net", "tapecontent.net",
+    "stape.fun", "stape.site", "stape.net",
+    # Anti-Ad & Proxy mirrors
+    "strtapeadblocker.xyz", "streamadblocker.xyz", "streamnoads.com",
+    "adblockstreamtape.com", "adblockeronstape.com", "watchadsontape.com",
+    "tapeadvertisement.com", "tapeblocker.com", "tapenoads.com", "tapewithadblock.org"
 }
 
 DOOD_DOMAINS = {
@@ -41,8 +52,13 @@ FILELIONS_DOMAINS = {
 }
 
 LULUSTREAM_DOMAINS = {
-    "luluvid.com", "lulustream.com", "lulu.to", "luluvids.com",
-    "pondr.org", "lulupdo.com"
+    # LuluVideo & LuluVdo mirrors
+    "luluvdo.com", "luluvideo.com", "luluvideo.net", "luluvideo.org",
+    "luluvid.com", "luluvid.net", "luluvids.com", "luluvids.net",
+    "luluvd.com", "luluvd.net", "luluvdoo.com", "luluvido.com",
+    # LuluStream & mirrors
+    "lulustream.com", "lulustream.net", "lulu.to", "lulu.st", "lulusp.com",
+    "pondr.org", "lulupdo.com", "streamhihi.com", "cdn1.site"
 }
 
 STREAMFILES_DOMAINS = {
@@ -88,12 +104,14 @@ PIXELDRAIN_DOMAINS = {
 def unpack_dean_edwards(payload: str) -> str:
     """
     Unpacks JavaScript obfuscated with Dean Edwards P.A.C.K.E.R.
+    Handles multiple blocks, single/double quotes, and returns all unpacked code.
     e.g. eval(function(p,a,c,k,e,d){...}('...', a, c, '...'.split('|')))
     """
-    pattern = r"eval\(function\(p,a,c,k,e,d\)\{.*?return p\}\('(.*?)',\s*(\d+),\s*(\d+),\s*'([^']*)'\.split\('\|'\)"
+    pattern = r"eval\(function\(p,a,c,k,e,d\)\{.*?return p\}\((['\"])(.*?)\1,\s*(\d+),\s*(\d+),\s*(['\"])(.*?)\5\.split\('\|'\)"
+    unpacked_blocks = []
     for m in re.finditer(pattern, payload, re.DOTALL):
         try:
-            p, a, c, k = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split('|')
+            p, a, c, k = m.group(2), int(m.group(3)), int(m.group(4)), m.group(6).split('|')
 
             def baseN(num, b):
                 digits = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -107,10 +125,10 @@ def unpack_dean_edwards(payload: str) -> str:
                 key = baseN(idx, a)
                 val = k[idx] if idx < len(k) and k[idx] else key
                 p = re.sub(r"\b" + re.escape(key) + r"\b", val, p)
-            return p
+            unpacked_blocks.append(p)
         except Exception:
             continue
-    return ""
+    return "\n".join(unpacked_blocks)
 
 
 def is_matching_host(netloc: str, domain_set: set[str]) -> bool:
@@ -122,16 +140,38 @@ def is_matching_host(netloc: str, domain_set: set[str]) -> bool:
     return False
 
 
-def sanitize_streamtape_url(raw_url: str) -> str:
+def is_streamtape_host(netloc: str) -> bool:
+    """Checks if netloc matches Streamtape domain set or mirror naming patterns."""
+    netloc = netloc.lower().split(":")[0]
+    if is_matching_host(netloc, STREAMTAPE_DOMAINS):
+        return True
+    if any(k in netloc for k in ("streamtape", "strtape", "tapedstream", "tapestream", "watchadsontape", "strcloud", "stape.fun")):
+        return True
+    if "tape" in netloc and ("stream" in netloc or "cloud" in netloc or "ad" in netloc):
+        return True
+    return False
+
+
+def is_luluvid_host(netloc: str) -> bool:
+    """Checks if netloc matches LuluStream / LuluVideo domain set or mirror naming patterns."""
+    netloc = netloc.lower().split(":")[0]
+    if is_matching_host(netloc, LULUSTREAM_DOMAINS):
+        return True
+    if any(k in netloc for k in ("luluvdo", "luluvideo", "lulustream", "luluvid", "luluvd", "lulupdo")):
+        return True
+    return False
+
+
+def sanitize_streamtape_url(raw_url: str, default_domain: str = "streamtape.com") -> str:
     """Neutralizes Streamtape decoy domains (stdreamtape, streamtadpe) and ensures valid HTTPS scheme."""
     if not raw_url:
         return ""
     url = re.sub(r"[\x00-\x1f\x7f-\x9f\r\n\t]", "", str(raw_url)).strip().strip("'\"")
     # Fix duplicate domain prefixes (e.g. streamtape.com/streamtape.com/get_video)
-    url = re.sub(r"(?:https?://)?(?:[a-z0-9\-]+\.)*streamt[a-z0-9\-]*\.com/(?:[a-z0-9\-]+\.)*streamt[a-z0-9\-]*\.com/", "https://streamtape.com/", url)
+    url = re.sub(r"(?:https?://)?(?:[a-z0-9\-]+\.)*streamt[a-z0-9\-]*\.com/(?:[a-z0-9\-]+\.)*streamt[a-z0-9\-]*\.com/", f"https://{default_domain}/", url)
     # Neutralize anti-scraper typo domains (stdreamtape.com, streamtadpe.com, streadmtape.com)
-    url = re.sub(r"https?://(?:stdreamtape|streamtadpe|streadmtape|streamtapde)\.com", "https://streamtape.com", url)
-    url = url.replace("stdreamtape.com", "streamtape.com").replace("streamtadpe.com", "streamtape.com")
+    url = re.sub(r"https?://(?:stdreamtape|streamtadpe|streadmtape|streamtapde)\.com", f"https://{default_domain}", url)
+    url = url.replace("stdreamtape.com", default_domain).replace("streamtadpe.com", default_domain)
     
     if url.startswith("//"):
         url = "https:" + url
@@ -139,7 +179,7 @@ def sanitize_streamtape_url(raw_url: str) -> str:
         if "/get_video" in url:
             if not url.startswith("/"):
                 url = "/" + url
-            url = "https://streamtape.com" + url
+            url = f"https://{default_domain}" + url
         else:
             url = "https://" + url
 
@@ -212,10 +252,21 @@ async def resolve_streamtape(url: str) -> dict:
             logger.warning(f"Streamtape API extraction error: {e}")
 
     # 2. Zero-Config Web Scraper across Streamtape domain mirrors
-    mirrors = ["streamtape.com", "streamtape.to", "strtape.tech", "streamta.pe"]
+    input_domain = parsed.netloc.lower().split(":")[0]
+    candidate_domains = [input_domain] if input_domain else []
+    known_mirrors = [
+        "streamtape.com", "streamtape.to", "strtape.tech", "streamta.pe",
+        "tapedstream.com", "strcloud.link", "stape.fun", "streamtape.net", "streamtape.xyz"
+    ]
+    for d in known_mirrors:
+        if d not in candidate_domains:
+            candidate_domains.append(d)
+
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
-        "Referer": "https://streamtape.com/"
+        "Referer": f"https://{input_domain or 'streamtape.com'}/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
     }
 
     elem_ids = [
@@ -226,7 +277,7 @@ async def resolve_streamtape(url: str) -> dict:
     try:
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            for domain in mirrors:
+            for domain in candidate_domains:
                 for target_url in [f"https://{domain}/e/{file_id}", f"https://{domain}/v/{file_id}"]:
                     try:
                         async with session.get(target_url, allow_redirects=True) as response:
@@ -241,7 +292,7 @@ async def resolve_streamtape(url: str) -> dict:
                     if vid_tag_match:
                         raw_src = vid_tag_match.group(1)
                         if "/get_video" in raw_src:
-                            clean_direct = sanitize_streamtape_url(raw_src)
+                            clean_direct = sanitize_streamtape_url(raw_src, default_domain=domain)
                             return {
                                 "type": "direct",
                                 "url": clean_direct,
@@ -278,8 +329,8 @@ async def resolve_streamtape(url: str) -> dict:
                             stream_url = match.group(1)
 
                     if stream_url:
-                        clean_direct = sanitize_streamtape_url(stream_url)
-                        logger.info(f"Streamtape stream extracted via scraper: {original_filename}")
+                        clean_direct = sanitize_streamtape_url(stream_url, default_domain=domain)
+                        logger.info(f"Streamtape stream extracted via scraper ({domain}): {original_filename}")
                         return {
                             "type": "direct",
                             "url": clean_direct,
@@ -293,8 +344,9 @@ async def resolve_streamtape(url: str) -> dict:
     # 3. Playwright Fallback if static scraping didn't yield token
     try:
         from bot.extractors.browser_ext import extract_with_playwright
-        logger.info(f"Triggering Playwright fallback for Streamtape {clean_embed_url}")
-        res = await extract_with_playwright(clean_embed_url)
+        pw_target = f"https://{input_domain}/e/{file_id}" if input_domain else clean_embed_url
+        logger.info(f"Triggering Playwright fallback for Streamtape {pw_target}")
+        res = await extract_with_playwright(pw_target)
         if res and res.get("url"):
             res["title"] = original_filename
             return res
@@ -484,44 +536,113 @@ async def resolve_streamwish(url: str) -> dict:
 
 
 async def resolve_luluvid(url: str) -> dict:
-    """Extracts direct m3u8 stream from LuluStream / LuluVid via unpacked JS."""
+    """Extracts direct m3u8 or mp4 stream from LuluStream / LuluVid / LuluVideo via static analysis & Playwright fallback."""
     parsed = urlparse(url)
     base_origin = f"{parsed.scheme}://{parsed.netloc}"
-    headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"{base_origin}/"}
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": f"{base_origin}/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+    }
+
+    # Extract clean file ID and construct candidate embed URLs
+    parts = [p for p in parsed.path.split("/") if p and p not in ("e", "d", "v", "embed")]
+    candidate_urls = []
+    if parts:
+        file_id = parts[0]
+        # /e/{id} is the embed player URL
+        candidate_urls.append(f"{base_origin}/e/{file_id}")
+        candidate_urls.append(f"{base_origin}/{file_id}")
+    if url not in candidate_urls:
+        candidate_urls.append(url)
+
+    title = "luluvideo.mp4"
+
     try:
-        timeout = aiohttp.ClientTimeout(total=15)
+        timeout = aiohttp.ClientTimeout(total=20)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.get(url, allow_redirects=True) as resp:
-                if resp.status != 200:
-                    return None
-                html = await resp.text()
+            for target_url in candidate_urls:
+                try:
+                    async with session.get(target_url, allow_redirects=True) as resp:
+                        if resp.status != 200:
+                            continue
+                        html = await resp.text()
+                except Exception:
+                    continue
 
-        title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
-        title = "lulustream_video.mp4"
-        if title_match:
-            raw_title = title_match.group(1).strip()
-            clean_title = re.sub(r"\s*-\s*Lulustream(\.mp4)?", "", raw_title, flags=re.IGNORECASE).strip()
-            if not clean_title.lower().endswith(".mp4"):
-                clean_title += ".mp4"
-            title = clean_title
+                if not html:
+                    continue
 
-        # Check if m3u8 is already directly present
-        m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
-        if not m3u8_matches:
-            unpacked = unpack_dean_edwards(html)
-            if unpacked:
-                m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', unpacked)
+                # Title extraction
+                title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
+                if title_match:
+                    raw_title = title_match.group(1).strip()
+                    clean_title = re.sub(r"\s*-\s*Lulu(stream|video|vid|vdo)(\.mp4)?", "", raw_title, flags=re.IGNORECASE).strip()
+                    if clean_title:
+                        if not clean_title.lower().endswith(".mp4"):
+                            clean_title += ".mp4"
+                        title = clean_title
 
-        if m3u8_matches:
-            logger.info(f"LuluStream stream resolved: {title}")
-            return {
-                "type": "m3u8",
-                "url": m3u8_matches[0],
-                "title": title,
-                "headers": headers
-            }
+                # Unescape slashes if JSON/JS escaped (\/ -> /)
+                clean_html = html.replace(r"\/", "/")
+
+                # 1. Direct m3u8 regex check in HTML
+                m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', clean_html)
+
+                # 2. Check sources: [{file: "..."}] in JWPlayer / VideoJS configuration
+                if not m3u8_matches:
+                    source_matches = re.findall(r'sources\s*:\s*\[\s*\{\s*(?:file|src)\s*:\s*["\']([^"\']+)["\']', clean_html)
+                    for sm in source_matches:
+                        if ".m3u8" in sm or ".mp4" in sm:
+                            m3u8_matches.append(sm)
+                            break
+
+                # 3. Unpack Dean Edwards P.A.C.K.E.R. scripts
+                if not m3u8_matches:
+                    unpacked = unpack_dean_edwards(html)
+                    if unpacked:
+                        clean_unpacked = unpacked.replace(r"\/", "/")
+                        m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', clean_unpacked)
+                        if not m3u8_matches:
+                            source_unpacked = re.findall(r'["\'](https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*)["\']', clean_unpacked)
+                            if source_unpacked:
+                                m3u8_matches = source_unpacked
+
+                # 4. Check direct mp4 matches if no m3u8 found
+                if not m3u8_matches:
+                    mp4_matches = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', clean_html)
+                    valid_mp4s = [m for m in mp4_matches if not any(x in m.lower() for x in ("thumb", "poster", "preview", "banner", "ad."))]
+                    if valid_mp4s:
+                        m3u8_matches = valid_mp4s
+
+                if m3u8_matches:
+                    stream_url = m3u8_matches[0]
+                    stream_type = "m3u8" if ".m3u8" in stream_url else "direct"
+                    logger.info(f"LuluStream/LuluVideo stream resolved: {title} ({stream_url[:50]}...)")
+                    return {
+                        "type": stream_type,
+                        "url": stream_url,
+                        "title": title,
+                        "headers": headers
+                    }
+
     except Exception as e:
-        logger.debug(f"LuluStream extraction failed for {url}: {e}")
+        logger.debug(f"LuluStream static extraction failed for {url}: {e}")
+
+    # 5. Playwright Fallback if static regex failed (handles Cloudflare/JS challenge or dynamic token injection)
+    try:
+        from bot.extractors.browser_ext import extract_with_playwright
+        pw_target = candidate_urls[0] if candidate_urls else url
+        logger.info(f"Triggering Playwright fallback for LuluStream/LuluVideo: {pw_target}")
+        res = await extract_with_playwright(pw_target)
+        if res and res.get("url"):
+            if not res.get("title") or res.get("title") in ("lulustream_video.mp4", "extracted_media.mp4"):
+                res["title"] = title
+            return res
+    except Exception as e:
+        logger.debug(f"Playwright fallback failed for LuluStream/LuluVideo: {e}")
+
     return None
 
 
@@ -846,7 +967,7 @@ async def extract_from_video_hosts(url: str) -> dict:
     parsed = urlparse(url)
     netloc = parsed.netloc
 
-    if is_matching_host(netloc, STREAMTAPE_DOMAINS):
+    if is_streamtape_host(netloc):
         logger.info(f"Target recognized as Streamtape: {url}")
         return await resolve_streamtape(url)
 
@@ -862,8 +983,8 @@ async def extract_from_video_hosts(url: str) -> dict:
         logger.info(f"Target recognized as Streamwish/FileLions: {url}")
         return await resolve_streamwish(url)
 
-    if is_matching_host(netloc, LULUSTREAM_DOMAINS):
-        logger.info(f"Target recognized as LuluStream/LuluVid: {url}")
+    if is_luluvid_host(netloc):
+        logger.info(f"Target recognized as LuluStream/LuluVid/LuluVideo: {url}")
         return await resolve_luluvid(url)
 
     if is_matching_host(netloc, STREAMFILES_DOMAINS):

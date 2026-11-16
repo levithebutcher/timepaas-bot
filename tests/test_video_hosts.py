@@ -6,23 +6,41 @@ import unittest
 import re
 from bot.extractors.video_hosts import (
     is_matching_host,
+    is_streamtape_host,
+    is_luluvid_host,
+    unpack_dean_edwards,
     evaluate_streamtape_js,
     sanitize_streamtape_url,
     STREAMTAPE_DOMAINS,
     DOOD_DOMAINS,
     MIXDROP_DOMAINS,
     STREAMWISH_DOMAINS,
-    FILELIONS_DOMAINS
+    FILELIONS_DOMAINS,
+    LULUSTREAM_DOMAINS
 )
 
 
 class TestVideoHosts(unittest.TestCase):
 
     def test_domain_matching(self):
-        # Streamtape
+        # Streamtape & Mirrors
         self.assertTrue(is_matching_host("streamtape.com", STREAMTAPE_DOMAINS))
         self.assertTrue(is_matching_host("strtape.tech", STREAMTAPE_DOMAINS))
         self.assertTrue(is_matching_host("subdomain.streamtape.to", STREAMTAPE_DOMAINS))
+        self.assertTrue(is_streamtape_host("tapedstream.com"))
+        self.assertTrue(is_streamtape_host("tapedstream.xyz"))
+        self.assertTrue(is_streamtape_host("strcloud.link"))
+        self.assertTrue(is_streamtape_host("stape.fun"))
+        self.assertTrue(is_streamtape_host("watchadsontape.com"))
+
+        # LuluStream & LuluVideo Mirrors
+        self.assertTrue(is_matching_host("luluvdo.com", LULUSTREAM_DOMAINS))
+        self.assertTrue(is_matching_host("luluvideo.com", LULUSTREAM_DOMAINS))
+        self.assertTrue(is_matching_host("lulustream.com", LULUSTREAM_DOMAINS))
+        self.assertTrue(is_luluvid_host("luluvdo.com"))
+        self.assertTrue(is_luluvid_host("luluvideo.com"))
+        self.assertTrue(is_luluvid_host("sub.luluvdo.com"))
+        self.assertTrue(is_luluvid_host("luluvd.com"))
 
         # Doodstream
         self.assertTrue(is_matching_host("dood.to", DOOD_DOMAINS))
@@ -40,6 +58,17 @@ class TestVideoHosts(unittest.TestCase):
         # Non-matching
         self.assertFalse(is_matching_host("youtube.com", STREAMTAPE_DOMAINS))
         self.assertFalse(is_matching_host("google.com", DOOD_DOMAINS))
+        self.assertFalse(is_streamtape_host("randomsite.xyz"))
+        self.assertFalse(is_luluvid_host("randomsite.xyz"))
+
+    def test_dean_edwards_unpacker_multiblock(self):
+        sample = (
+            "eval(function(p,a,c,k,e,d){return p}('0 1=\"2.3\";',4,4,'var|file|video|m3u8'.split('|')))\n"
+            "eval(function(p,a,c,k,e,d){return p}('0 1=\"4\";',5,5,'var|title|x|y|SampleTitle'.split('|')))"
+        )
+        unpacked = unpack_dean_edwards(sample)
+        self.assertIn("video.m3u8", unpacked)
+        self.assertIn("SampleTitle", unpacked)
 
     def test_streamtape_regex_token_extraction(self):
         # Mock HTML with robotlink assignment
