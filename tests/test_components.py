@@ -435,6 +435,44 @@ class TestComponents(unittest.TestCase):
             parts = asyncio.run(split_video_file(dummy_file, target_part_size=5000))
             self.assertEqual(parts, [dummy_file])
 
+    def test_resolve_dump_chat_formats(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from bot.handlers.commands import resolve_dump_chat
+
+        client = MagicMock()
+        client.get_chat = AsyncMock(side_effect=lambda cid: MagicMock(id=cid, title=f"Chat {cid}"))
+        client.join_chat = AsyncMock(side_effect=lambda inv: MagicMock(id=-1009999999, title="Invite Chat"))
+
+        # 1. Private channel message link (t.me/c/<id>/<msg>)
+        res = asyncio.run(resolve_dump_chat(client, "https://t.me/c/1234567890/45"))
+        self.assertEqual(res.id, -1001234567890)
+
+        # 2. Public channel message link
+        res = asyncio.run(resolve_dump_chat(client, "https://t.me/my_dump_ch/99"))
+        self.assertEqual(res.id, "@my_dump_ch")
+
+        # 3. Public channel URL
+        res = asyncio.run(resolve_dump_chat(client, "https://t.me/my_dump_ch"))
+        self.assertEqual(res.id, "@my_dump_ch")
+
+        # 4. Raw digits without -100
+        res = asyncio.run(resolve_dump_chat(client, "1234567890"))
+        self.assertEqual(res.id, -1001234567890)
+
+        # 5. Full -100 channel ID
+        res = asyncio.run(resolve_dump_chat(client, "-1001234567890"))
+        self.assertEqual(res.id, -1001234567890)
+
+        # 6. Private invite link
+        res = asyncio.run(resolve_dump_chat(client, "https://t.me/+AbCdEfGh"))
+        self.assertEqual(res.id, -1009999999)
+
+        # 7. Forwarded message in reply
+        reply_msg = MagicMock()
+        reply_msg.forward_from_chat = MagicMock(id=-1005555555)
+        res = asyncio.run(resolve_dump_chat(client, "", reply_to=reply_msg))
+        self.assertEqual(res.id, -1005555555)
+
 
 if __name__ == "__main__":
     unittest.main()

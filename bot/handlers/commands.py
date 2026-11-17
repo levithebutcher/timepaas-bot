@@ -1,3 +1,4 @@
+import re
 import logging
 from pathlib import Path
 try:
@@ -171,47 +172,171 @@ async def setcaption_handler(client: Client, message: Message):
     await message.reply_text(f"✅ **Custom caption template saved:**\n`{caption}`")
 
 
+async def resolve_dump_chat(client: Client, raw_input: str = "", reply_to: Message = None):
+    """
+    Automatically resolves and fetches any channel target:
+    - Forwarded message from the channel (reply_to.forward_from_chat)
+    - Private channel message link (https://t.me/c/1234567890/45 -> -1001234567890)
+    - Private invite link (https://t.me/+AbcDef or https://t.me/joinchat/AbcDef)
+    - Public channel username or link (https://t.me/mychannel/45 or @mychannel)
+    - Numeric channel ID (-1001234567890 or 1234567890)
+    """
+    # 1. Forwarded message check
+    if reply_to:
+        if getattr(reply_to, "forward_from_chat", None):
+            f_chat = reply_to.forward_from_chat
+            try:
+                return await client.get_chat(f_chat.id)
+            except Exception:
+                return f_chat
+        if not raw_input:
+            if getattr(reply_to, "text", None):
+                raw_input = reply_to.text.strip()
+            elif getattr(reply_to, "caption", None):
+                raw_input = reply_to.caption.strip()
+
+    if not raw_input:
+        return None
+
+    target = raw_input.strip().strip("'\"")
+
+    # 2. Private channel message link: https://t.me/c/1234567890/123 or t.me/c/1234567890
+    c_match = re.search(r"(?:https?://)?(?:www\.)?t(?:elegram)?\.me/c/(\d+)(?:/\d+)?", target)
+    if c_match:
+        raw_num = c_match.group(1)
+        full_id = int(f"-100{raw_num}")
+        logger.info(f"Resolved private channel message link to ID: {full_id}")
+        return await client.get_chat(full_id)
+
+    # 3. Private invite link: https://t.me/+AbcDef or https://t.me/joinchat/AbcDef or +AbcDef
+    invite_match = re.search(r"(?:https?://)?(?:www\.)?t(?:elegram)?\.me/(?:\+|joinchat/)([a-zA-Z0-9_\-]+)", target)
+    if not invite_match and target.startswith("+") and len(target) > 5:
+        invite_match = re.search(r"\+([a-zA-Z0-9_\-]+)", target)
+
+    if invite_match:
+        invite_hash = invite_match.group(1)
+        full_invite = f"https://t.me/+{invite_hash}"
+        logger.info(f"Attempting to resolve private invite link: {full_invite}")
+        join_err = None
+        try:
+            chat = await client.join_chat(full_invite)
+            if chat:
+                return chat
+        except Exception as err:
+            join_err = err
+            logger.debug(f"join_chat with invite failed: {err}; trying get_chat...")
+
+        try:
+            return await client.get_chat(full_invite)
+        except Exception as get_err:
+            logger.debug(f"get_chat with invite failed: {get_err}")
+            raise RuntimeError(
+                f"Could not connect via private invite link. "
+                f"Please ensure the Bot is added as an Administrator with 'Post Messages' permission in that channel! "
+                f"({join_err or get_err})"
+            )
+
+    # 4. Public channel link or message link: https://t.me/channel_name/123 or https://t.me/channel_name
+    pub_match = re.search(r"(?:https?://)?(?:www\.)?t(?:elegram)?\.me/([a-zA-Z0-9_]{4,})(?:/\d+)?", target)
+    if pub_match:
+        uname = pub_match.group(1)
+        if uname.lower() not in ("c", "joinchat", "share", "addstickers", "setlanguage"):
+            logger.info(f"Resolved public link to username: @{uname}")
+            return await client.get_chat(f"@{uname}")
+
+    # 5. Username format: @mychannel
+    if target.startswith("@"):
+        return await client.get_chat(target)
+
+    # 6. Integer channel ID: -100..., -..., or raw digits
+    clean_num = target.replace(" ", "")
+    if clean_num.startswith("-100") and clean_num[4:].isdigit():
+        return await client.get_chat(int(clean_num))
+    elif clean_num.startswith("-") and clean_num[1:].isdigit():
+        try:
+            return await client.get_chat(int(clean_num))
+        except Exception:
+            return await client.get_chat(int(f"-100{clean_num[1:]}"))
+    elif clean_num.isdigit():
+        try:
+            return await client.get_chat(int(f"-100{clean_num}"))
+        except Exception:
+            return await client.get_chat(int(clean_num))
+
+    # 7. Fallback direct resolution
+    return await client.get_chat(target)
+
+
 @Client.on_message(filters.command(["setdump", "setchannel"]) & filters.private)
 async def setdump_handler(client: Client, message: Message):
     if not is_authorized(message.from_user.id):
         return
 
     parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
+    raw_input = parts[1].strip() if len(parts) > 1 else ""
+    reply_to = message.reply_to_message
+
+    if not raw_input and not reply_to:
         await message.reply_text(
             "<blockquote>"
-            "⚠️ <b>Usage:</b> <code>/setdump &lt;channel_id or @username&gt;</code>\n\n"
-            "<b>Example:</b> <code>/setdump -1001234567890</code>\n\n"
-            "<i>Note: Make sure the bot is an Administrator in that channel/group with Post Messages permissions!</i>"
+            "⚠️ <b>Usage:</b> <code>/setdump &lt;link / username / ID&gt;</code>\n\n"
+            "<b>Auto-Fetch supports all formats:</b>\n"
+            "• <b>Private Message Link:</b> <code>https://t.me/c/1234567890/45</code>\n"
+            "• <b>Private Invite Link:</b> <code>https://t.me/+AbCdEfGh...</code>\n"
+            "• <b>Public Channel:</b> <code>@mychannel</code> or <code>https://t.me/mychannel</code>\n"
+            "• <b>Channel ID:</b> <code>-1001234567890</code> or <code>1234567890</code>\n"
+            "• <b>Or Simply:</b> Forward any post from the channel here and reply <code>/setdump</code>!\n\n"
+            "<i>Note: Make sure the bot is an Administrator in that channel with 'Post Messages' permission!</i>"
             "</blockquote>"
         )
         return
 
-    target = parts[1].strip()
-    try:
-        try:
-            target_id = int(target)
-        except ValueError:
-            target_id = target
+    status_msg = await message.reply_text("🔍 <i>Fetching channel details & verifying permissions...</i>")
 
-        chat = await client.get_chat(target_id)
+    try:
+        chat = await resolve_dump_chat(client, raw_input=raw_input, reply_to=reply_to)
+        if not chat:
+            raise ValueError("No valid channel target could be identified from your input.")
+
+        # Verify bot permissions in the channel
+        perm_info = "Connected ✅"
+        try:
+            me = await client.get_me()
+            member = await client.get_chat_member(chat.id, me.id)
+            st = str(getattr(member, "status", "")).lower()
+            if "admin" in st or "owner" in st or "creator" in st:
+                perm_info = "Administrator (Post Messages allowed) ✅"
+            else:
+                perm_info = f"Member ({st}) ⚠️ (Ensure Bot has Post permission!)"
+        except Exception as p_err:
+            logger.debug(f"Could not verify chat member permissions: {p_err}")
+
         await set_dump_channel(chat.id)
-        await message.reply_text(
+
+        title = getattr(chat, "title", None) or "Dump Channel"
+        uname = f"@{chat.username}" if getattr(chat, "username", None) else "Private Channel"
+
+        await status_msg.edit_text(
             f"<blockquote>"
             f"✅ <b>DUMP CHANNEL CONFIGURED!</b>\n\n"
-            f"• <b>Title:</b> {chat.title}\n"
+            f"• <b>Title:</b> {title}\n"
             f"• <b>ID:</b> <code>{chat.id}</code>\n"
-            f"• <b>Mode:</b> Server-to-Server High Speed Relay (Option B)\n\n"
-            f"<i>Video albums will now be uploaded to this channel and delivered instantly to chats with zero local disk bloat!</i>"
+            f"• <b>Type:</b> {uname}\n"
+            f"• <b>Bot Permission:</b> {perm_info}\n"
+            f"• <b>Active Mode:</b> Server-to-Server High Speed Relay (Option B)\n\n"
+            f"<i>Video albums will now be uploaded to this channel and copied to your chat instantly with zero local disk usage!</i>"
             f"</blockquote>"
         )
     except Exception as e:
-        logger.error(f"Failed to configure dump channel {target}: {e}")
-        await message.reply_text(
+        logger.error(f"Failed to configure dump channel from '{raw_input}': {e}")
+        await status_msg.edit_text(
             f"<blockquote>"
             f"❌ <b>Could Not Connect to Channel</b>\n\n"
-            f"<b>Error:</b> <code>{e}</code>\n\n"
-            f"<i>Please verify the ID and ensure the Bot is an Admin in the channel with Post Messages permission!</i>"
+            f"<b>Reason:</b> <code>{e}</code>\n\n"
+            f"<b>Troubleshooting:</b>\n"
+            f"1. Make sure you added the Bot to the channel/group as an <b>Administrator</b>.\n"
+            f"2. Ensure the Bot has <b>'Post Messages'</b> permission enabled.\n"
+            f"3. For private channels, you can also forward any message from the channel here and reply <code>/setdump</code>."
             f"</blockquote>"
         )
 
