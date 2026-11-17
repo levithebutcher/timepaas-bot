@@ -341,6 +341,32 @@ async def download_direct_stream(
     return target_path
 
 
+async def _download_m3u8_via_ytdlp(m3u8_url: str, target_path: Path, headers: dict) -> bool:
+    """Fallback HLS/M3U8 downloader using yt-dlp when FFmpeg fails."""
+    def _sync_dl():
+        import yt_dlp
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "outtmpl": str(target_path),
+            "format": "best",
+            "nocheckcertificate": True,
+            "http_headers": headers or {},
+            "extractor_args": {
+                "generic": {"impersonate": ["chrome"]}
+            }
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([m3u8_url])
+        return target_path.exists() and target_path.stat().st_size > 0
+
+    try:
+        return await asyncio.to_thread(_sync_dl)
+    except Exception as e:
+        logger.debug(f"yt-dlp m3u8 fallback failed: {e}")
+        return False
+
+
 async def download_m3u8_stream(
     m3u8_url: str,
     target_path: Path,
@@ -349,7 +375,8 @@ async def download_m3u8_stream(
     cancel_event: asyncio.Event = None
 ) -> Path:
     """
-    Downloads and remuxes an HLS .m3u8 stream into an MP4 file using ffmpeg.
+    Downloads and remuxes an HLS .m3u8 stream into an MP4 file using ffmpeg,
+    with automatic header forwarding and resilient yt-dlp fallback.
     """
     if not check_free_disk_space():
         raise RuntimeError("Insufficient disk space on host machine.")
@@ -361,11 +388,12 @@ async def download_m3u8_stream(
     m3u8_url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(m3u8_url).strip())
     clean_headers = sanitize_headers(headers)
     user_agent = clean_headers.get("User-Agent", DEFAULT_USER_AGENT)
-    referer = clean_headers.get("Referer", "")
 
-    header_str = f"User-Agent: {user_agent}\r\n"
-    if referer:
-        header_str += f"Referer: {referer}\r\n"
+    header_lines = [f"User-Agent: {user_agent}"]
+    for k, v in clean_headers.items():
+        if k.lower() != "user-agent":
+            header_lines.append(f"{k}: {v}")
+    header_str = "\r\n".join(header_lines) + "\r\n"
 
     cmd = [
         "ffmpeg",
@@ -377,7 +405,6 @@ async def download_m3u8_stream(
         "-reconnect_delay_max", "5",
         "-i", m3u8_url,
         "-c", "copy",
-        "-bsf:a", "aac_adtstoasc",
         "-movflags", "+faststart",
         str(target_path)
     ]
@@ -385,7 +412,7 @@ async def download_m3u8_stream(
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL
+        stderr=asyncio.subprocess.PIPE
     )
 
     try:
@@ -405,7 +432,23 @@ async def download_m3u8_stream(
                 pass
 
         if proc.returncode != 0:
-            raise RuntimeError(f"FFmpeg m3u8 download exited with code {proc.returncode}")
+            stderr_bytes = await proc.stderr.read()
+            stderr_out = stderr_bytes.decode("utf-8", errors="ignore")
+            logger.warning(f"FFmpeg m3u8 download exited with code {proc.returncode}: {stderr_out[-400:]}")
+
+            # Recognize specific HTTP / Cloudflare failure codes
+            if "522" in stderr_out or "5XX Server Error" in stderr_out:
+                raise RuntimeError("Host server connection timed out / server down (HTTP 522). Try again later.")
+            if "404" in stderr_out or "not found" in stderr_out.lower():
+                raise RuntimeError("Stream not found on host (HTTP 404). File may have been deleted.")
+            if "403" in stderr_out or "forbidden" in stderr_out.lower():
+                raise RuntimeError("Access forbidden by host CDN (HTTP 403).")
+
+            # Fallback to yt-dlp HLS downloader
+            logger.info("Attempting yt-dlp fallback for m3u8 stream...")
+            fallback_success = await _download_m3u8_via_ytdlp(m3u8_url, target_path, clean_headers)
+            if not fallback_success or not target_path.exists() or target_path.stat().st_size == 0:
+                raise RuntimeError(f"FFmpeg m3u8 download exited with code {proc.returncode}")
 
     except asyncio.CancelledError:
         if proc.returncode is None:

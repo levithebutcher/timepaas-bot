@@ -190,7 +190,7 @@ class TestComponents(unittest.TestCase):
         sent_messages = []
 
         class MockClient:
-            async def send_message(self, chat_id, text):
+            async def send_message(self, chat_id, text, **kwargs):
                 sent_messages.append(text)
                 return True
 
@@ -242,7 +242,7 @@ class TestComponents(unittest.TestCase):
         edited_texts = []
 
         class MockClient:
-            async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+            async def edit_message_text(self, chat_id, message_id, text, reply_markup=None, **kwargs):
                 edited_texts.append(text)
                 return True
 
@@ -322,7 +322,7 @@ class TestComponents(unittest.TestCase):
         markups = []
 
         class MockClient:
-            async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+            async def edit_message_text(self, chat_id, message_id, text, reply_markup=None, **kwargs):
                 edited_texts.append(text)
                 markups.append(reply_markup)
                 return True
@@ -500,6 +500,48 @@ class TestComponents(unittest.TestCase):
         client.send_media_group.assert_called_once()
         # Check that dump messages were auto-deleted from dump channel!
         client.delete_messages.assert_called_once_with(chat_id=-100999, message_ids=[101, 102])
+
+    def test_parse_luluvid_title_extraction(self):
+        from bot.extractors.video_hosts import _parse_luluvid_content
+        sample_html = '''
+        <html>
+          <head>
+            <title>Loading...</title>
+            <script>document.title = "adakabeer white guy 1 \\u002d Lulustream.mp4";</script>
+          </head>
+          <body>
+            <script>var x = "https://cdn.example.com/hls/master.m3u8";</script>
+          </body>
+        </html>
+        '''
+        stream_url, stream_type, title = _parse_luluvid_content(sample_html)
+        self.assertEqual(stream_url, "https://cdn.example.com/hls/master.m3u8")
+        self.assertEqual(stream_type, "m3u8")
+        self.assertEqual(title, "adakabeer_white_guy_1.mp4")
+
+    def test_progress_html_parsing_safety(self):
+        import asyncio
+        from pyrogram.parser.html import HTML
+        from bot.core.progress import format_time, generate_bar
+
+        h = HTML(None)
+        # Test format_time does not return double-dash
+        self.assertNotIn("--", format_time(None))
+        self.assertNotIn("--", format_time(-1))
+
+        # Test blockquote with dynamic strings parses without unclosed tags
+        sample_text = (
+            "<blockquote>"
+            "⚡ <b>TIMEPASS LEECH</b> • 🎥 <b>Video Player</b>\n"
+            "📁 <code>Test &lt;Video&gt; &amp; File.mp4</code>\n"
+            f"📊 <code>{generate_bar(50, 100)}</code>\n"
+            "💾 <b>50.00 MB</b> / 100.00 MB • ⚡ <b>5.00 MB/s</b> • ⏱ <b>00:10</b>\n"
+            "🔄 📥 Downloading media stream..."
+            "</blockquote>"
+        )
+        parsed = asyncio.run(h.parse(sample_text))
+        self.assertIsNotNone(parsed)
+        self.assertIn("TIMEPASS LEECH", parsed["message"])
 
 
 if __name__ == "__main__":

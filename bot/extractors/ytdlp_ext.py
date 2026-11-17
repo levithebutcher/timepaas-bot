@@ -22,11 +22,17 @@ def _ytdlp_extract_sync(url: str) -> dict:
         "extractor_args": {
             "youtube": {
                 "player_client": ["android", "web"]
+            },
+            "generic": {
+                "impersonate": ["chrome"]
             }
         },
         "http_headers": {
             "User-Agent": DEFAULT_USER_AGENT,
             "Referer": referer,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Mode": "navigate",
         },
     }
 

@@ -11,7 +11,7 @@ if sys.platform != "win32":
     except Exception:
         pass
 
-from pyrogram import Client
+from pyrogram import Client, enums
 from bot.config import API_ID, API_HASH, BOT_TOKEN, STREAMTAPE_LOGIN, STREAMTAPE_KEY
 from bot.core.cleaner import clean_temp_directories
 from bot.core.queue_manager import queue_manager
@@ -41,6 +41,7 @@ def create_bot_client() -> Client:
         bot_token=BOT_TOKEN,
         workers=32,
         max_concurrent_transmissions=10,
+        parse_mode=enums.ParseMode.HTML,
         plugins=dict(root="bot/handlers")
     )
     return app

@@ -1,10 +1,14 @@
 import time
 import asyncio
+import html
 import logging
 try:
+    from pyrogram import enums
     from pyrogram.errors import FloodWait, MessageNotModified
     from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    HTML_PARSE_MODE = enums.ParseMode.HTML
 except ImportError:
+    HTML_PARSE_MODE = None
     class FloodWait(Exception):
         value = 0
     class MessageNotModified(Exception):
@@ -40,7 +44,7 @@ def format_size(bytes_val: int) -> str:
 def format_time(seconds: float) -> str:
     """Formats seconds into readable string (HH:MM:SS or MM:SS)."""
     if seconds is None or seconds < 0 or seconds == float("inf"):
-        return "--:--"
+        return "00:00"
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
     if h > 0:
@@ -141,8 +145,8 @@ async def update_status_message(
 
     # Calculate speed, elapsed & ETA
     speed_str = "0 B/s"
-    eta_str = "--:--"
-    elapsed_str = "--:--"
+    eta_str = "00:00"
+    elapsed_str = "00:00"
     if start_time and current > 0:
         elapsed = now - start_time
         if elapsed > 0:
@@ -160,12 +164,13 @@ async def update_status_message(
     display_name = file_name if len(file_name) <= 35 else file_name[:32] + "..."
     if not display_name:
         display_name = "Media File"
+    safe_name = html.escape(display_name)
 
     mode_tag = "🎞 <b>Album Mode</b>" if is_album else "🎥 <b>Video Player</b>"
     text = (
         f"<blockquote>"
         f"⚡ <b>TIMEPASS LEECH</b> • {mode_tag}\n"
-        f"📁 <code>{display_name}</code>\n"
+        f"📁 <code>{safe_name}</code>\n"
         f"📊 <code>{bar}</code>\n"
         f"💾 <b>{curr_str}</b> / {total_str} • ⚡ <b>{speed_str}</b> • ⏱ <b>{eta_str}</b>\n"
         f"🔄 {action}"
@@ -177,7 +182,7 @@ async def update_status_message(
     info_row = []
     if speed_str and speed_str != "0 B/s":
         info_row.append(InlineKeyboardButton(f"⚡ {speed_str}", callback_data=f"hud:speed:{task_id}"))
-    if eta_str and eta_str != "--:--":
+    if eta_str and eta_str != "00:00":
         info_row.append(InlineKeyboardButton(f"⏱ {eta_str}", callback_data=f"hud:eta:{task_id}"))
     if curr_str and curr_str != "0 B":
         info_row.append(InlineKeyboardButton(f"💾 {curr_str}", callback_data=f"hud:size:{task_id}"))
@@ -189,12 +194,15 @@ async def update_status_message(
 
     for attempt in range(3):
         try:
-            await client.edit_message_text(
+            edit_kwargs = dict(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=text,
                 reply_markup=reply_markup
             )
+            if HTML_PARSE_MODE:
+                edit_kwargs["parse_mode"] = HTML_PARSE_MODE
+            await client.edit_message_text(**edit_kwargs)
             break
         except MessageNotModified:
             break
@@ -260,11 +268,12 @@ async def update_album_pipeline_dashboard(
                     fn = dl_item.get("file_name", "Media")
                     if len(fn) > 28:
                         fn = fn[:25] + "..."
+                    safe_fn = html.escape(fn)
                     cb = dl_item.get("current", 0)
                     tb = dl_item.get("total", 0)
-                    sp = dl_item.get("speed_str", "--")
+                    sp = dl_item.get("speed_str", "N/A")
                     bar = generate_bar(cb, tb, length=8)
-                    lines.append(f"• <code>{fn}</code> — {bar} ({format_size(cb)}) • ⚡ {sp}")
+                    lines.append(f"• <code>{safe_fn}</code> — {bar} ({format_size(cb)}) • ⚡ {sp}")
             else:
                 lines.append("• <i>Finalizing pack...</i>")
             dl_text = "\n".join(lines)
@@ -272,13 +281,14 @@ async def update_album_pipeline_dashboard(
             file_name = current_dl.get("file_name", "Media")
             if len(file_name) > 30:
                 file_name = file_name[:27] + "..."
+            safe_name = html.escape(file_name)
             curr_b = current_dl.get("current", 0)
             tot_b = current_dl.get("total", 0)
-            speed = current_dl.get("speed_str", "--")
-            eta = current_dl.get("eta_str", "--")
+            speed = current_dl.get("speed_str", "N/A")
+            eta = current_dl.get("eta_str", "N/A")
             bar = generate_bar(curr_b, tot_b, length=8)
             dl_text = (
-                f"📥 <b>Downloading:</b> <code>{file_name}</code>\n"
+                f"📥 <b>Downloading:</b> <code>{safe_name}</code>\n"
                 f"• {bar} ({format_size(curr_b)} / {format_size(tot_b)}) • ⚡ {speed} • ⏱ {eta}"
             )
     else:
@@ -312,12 +322,15 @@ async def update_album_pipeline_dashboard(
 
     for attempt in range(3):
         try:
-            await client.edit_message_text(
+            edit_kwargs = dict(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=text,
                 reply_markup=reply_markup
             )
+            if HTML_PARSE_MODE:
+                edit_kwargs["parse_mode"] = HTML_PARSE_MODE
+            await client.edit_message_text(**edit_kwargs)
             break
         except MessageNotModified:
             break

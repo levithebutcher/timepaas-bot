@@ -2,6 +2,7 @@ import re
 import uuid
 import asyncio
 import logging
+import html
 try:
     from pyrogram import Client, filters
     from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -142,10 +143,11 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
             [InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel:{task_id}")]
         ]) if InlineKeyboardMarkup and InlineKeyboardButton else None
 
+        safe_url = html.escape(url[:45])
         status_text = (
             f"<blockquote>"
             f"⚡ <b>TIMEPASS LEECH</b>\n"
-            f"🔗 <code>{url[:45]}...</code>\n"
+            f"🔗 <code>{safe_url}...</code>\n"
             f"⏳ <i>Waiting for worker slot in queue...</i>"
             f"</blockquote>"
         )

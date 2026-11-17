@@ -3,12 +3,16 @@ import time
 import shutil
 import asyncio
 import logging
+import html
 from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 try:
+    from pyrogram import enums
     from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    HTML_PARSE_MODE = enums.ParseMode.HTML
 except ImportError:
+    HTML_PARSE_MODE = None
     InlineKeyboardMarkup = None
     InlineKeyboardButton = None
 from bot.config import (
@@ -651,8 +655,8 @@ class QueueManager:
                                 "file_name": "Resolving stream...",
                                 "current": 0,
                                 "total": 0,
-                                "speed_str": "--",
-                                "eta_str": "--",
+                                "speed_str": "N/A",
+                                "eta_str": "00:00",
                                 "item_num": item_idx + 1,
                                 "chunk_total": len(chunk_urls)
                             }
@@ -689,8 +693,8 @@ class QueueManager:
                                 nonlocal current_dl_info
                                 now = time.time()
                                 elapsed = now - start_dl_time
-                                sp_str = "--"
-                                et_str = "--"
+                                sp_str = "N/A"
+                                et_str = "00:00"
                                 if elapsed > 0 and current > 0:
                                     sp = current / elapsed
                                     sp_str = f"{format_size(int(sp))}/s"
@@ -763,7 +767,7 @@ class QueueManager:
                                                 "current": sub_part.stat().st_size if sub_part.exists() else 0,
                                                 "total": sub_part.stat().st_size if sub_part.exists() else 0,
                                                 "speed_str": "Relaying",
-                                                "eta_str": "--",
+                                                "eta_str": "00:00",
                                                 "item_num": item_idx + 1,
                                                 "chunk_total": len(chunk_urls)
                                             }
@@ -932,8 +936,9 @@ class QueueManager:
             current_chunk.append("\n<b>Failed Links:</b>")
             current_length += 16
             for url, err in batch.failed_urls:
-                err_clean = str(err).replace("\n", " ")[:60]
-                line = f"• <code>{url}</code> — <i>{err_clean}</i>"
+                safe_url = html.escape(str(url))
+                safe_err = html.escape(str(err).replace("\n", " ")[:60])
+                line = f"• <code>{safe_url}</code> — <i>{safe_err}</i>"
                 if current_length + len(line) + 1 > 3500:
                     current_chunk.append("</blockquote>")
                     messages_to_send.append("\n".join(current_chunk))
@@ -950,10 +955,10 @@ class QueueManager:
 
         for msg_text in messages_to_send:
             try:
-                await client.send_message(
-                    chat_id=batch.chat_id,
-                    text=msg_text
-                )
+                send_kwargs = dict(chat_id=batch.chat_id, text=msg_text)
+                if HTML_PARSE_MODE:
+                    send_kwargs["parse_mode"] = HTML_PARSE_MODE
+                await client.send_message(**send_kwargs)
                 await asyncio.sleep(0.5)
             except Exception as e:
                 logger.error(f"Failed to send batch summary chunk for {batch.batch_id}: {e}")

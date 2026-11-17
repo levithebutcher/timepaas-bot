@@ -560,11 +560,40 @@ def _parse_luluvid_content(html: str) -> tuple:
         return None, "direct", None
 
     title = None
-    title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
-    if title_match:
-        raw_title = title_match.group(1).strip()
+    raw_title = None
+
+    # A. Check script document.title = "..." assignment (handles dynamically injected titles)
+    doc_title_match = re.search(r'document\.title\s*=\s*["\']([^"\']+)["\']', html)
+    if doc_title_match:
+        cand = doc_title_match.group(1).strip()
+        try:
+            cand = cand.encode('utf-8').decode('unicode_escape').strip()
+        except Exception:
+            pass
+        if cand and not cand.lower().startswith("loading"):
+            raw_title = cand
+
+    # B. Check og:title meta tag
+    if not raw_title:
+        og_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        if not og_match:
+            og_match = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']', html, re.IGNORECASE)
+        if og_match:
+            cand = og_match.group(1).strip()
+            if cand and not cand.lower().startswith("loading"):
+                raw_title = cand
+
+    # C. Fallback to <title> tag
+    if not raw_title:
+        title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
+        if title_match:
+            cand = title_match.group(1).strip()
+            if cand and not cand.lower().startswith("loading"):
+                raw_title = cand
+
+    if raw_title:
         clean_title = re.sub(r"\s*-\s*Lulu(stream|video|vid|vdo)(\.mp4)?", "", raw_title, flags=re.IGNORECASE).strip()
-        if clean_title:
+        if clean_title and not clean_title.lower().startswith("loading"):
             title = sanitize_title(clean_title, default="luluvideo.mp4")
 
     clean_html = html.replace(r"\/", "/")
