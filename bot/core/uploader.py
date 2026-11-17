@@ -36,10 +36,10 @@ from bot.core.cleaner import remove_path
 
 logger = logging.getLogger(__name__)
 
-# Concurrency semaphore to avoid overloading Telegram MTProto DC5 media socket with too many simultaneous uploads
-_UPLOAD_SEMAPHORE = asyncio.Semaphore(1)
+# Concurrency semaphore to allow multiple simultaneous uploads without hitting Telegram flood limits
+_UPLOAD_SEMAPHORE = asyncio.Semaphore(4)
 # Concurrency semaphore to prevent multiple ffmpeg/ffprobe tasks from pinning CPU at 100%
-_METADATA_SEMAPHORE = asyncio.Semaphore(2)
+_METADATA_SEMAPHORE = asyncio.Semaphore(4)
 
 
 async def get_video_metadata(file_path: Path) -> tuple[int, int, int, bool]:
@@ -391,53 +391,64 @@ async def deliver_dumped_album(
     """
     Delivers video album to user referencing files already on Telegram servers (Option B).
     Lightning-fast server-to-server delivery with zero local network re-upload.
+    Automatically deletes temporary messages from the Dump Channel after delivery.
     """
     if not dumped_items:
         return
 
-    if len(dumped_items) == 1:
-        item = dumped_items[0]
-        try:
-            await client.copy_messages(
-                chat_id=target_chat_id,
-                from_chat_id=dump_chat_id,
-                message_ids=item["msg_id"]
-            )
-        except Exception:
-            await client.send_video(
-                chat_id=target_chat_id,
-                video=item["file_id"],
+    dump_msg_ids = [item["msg_id"] for item in dumped_items if "msg_id" in item]
+
+    try:
+        if len(dumped_items) == 1:
+            item = dumped_items[0]
+            try:
+                await client.copy_messages(
+                    chat_id=target_chat_id,
+                    from_chat_id=dump_chat_id,
+                    message_ids=item["msg_id"]
+                )
+            except Exception:
+                await client.send_video(
+                    chat_id=target_chat_id,
+                    video=item["file_id"],
+                    caption=item["caption"],
+                    duration=item["duration"],
+                    width=item["width"],
+                    height=item["height"],
+                    supports_streaming=True
+                )
+            return
+
+        # Group into media group using Telegram file_ids
+        media_group = [
+            InputMediaVideo(
+                media=item["file_id"],
                 caption=item["caption"],
                 duration=item["duration"],
                 width=item["width"],
                 height=item["height"],
                 supports_streaming=True
             )
-        return
+            for item in dumped_items
+        ]
 
-    # Group into media group using Telegram file_ids
-    media_group = [
-        InputMediaVideo(
-            media=item["file_id"],
-            caption=item["caption"],
-            duration=item["duration"],
-            width=item["width"],
-            height=item["height"],
-            supports_streaming=True
-        )
-        for item in dumped_items
-    ]
-
-    try:
-        await client.send_media_group(chat_id=target_chat_id, media=media_group)
-    except Exception as e:
-        logger.warning(f"send_media_group with file_ids failed ({e}); falling back to copy_messages")
-        msg_ids = [item["msg_id"] for item in dumped_items]
-        await client.copy_messages(
-            chat_id=target_chat_id,
-            from_chat_id=dump_chat_id,
-            message_ids=msg_ids
-        )
+        try:
+            await client.send_media_group(chat_id=target_chat_id, media=media_group)
+        except Exception as e:
+            logger.warning(f"send_media_group with file_ids failed ({e}); falling back to copy_messages")
+            await client.copy_messages(
+                chat_id=target_chat_id,
+                from_chat_id=dump_chat_id,
+                message_ids=dump_msg_ids
+            )
+    finally:
+        # Auto-delete temporary relayed videos from the Dump Channel so it stays 100% clean
+        if dump_msg_ids:
+            try:
+                await client.delete_messages(chat_id=dump_chat_id, message_ids=dump_msg_ids)
+                logger.info(f"Auto-deleted {len(dump_msg_ids)} temporary messages from Dump Channel {dump_chat_id}")
+            except Exception as del_err:
+                logger.debug(f"Failed to auto-delete messages from dump channel: {del_err}")
 
 
 async def upload_photo_albums(client, chat_id: int, image_paths: list[Path]):

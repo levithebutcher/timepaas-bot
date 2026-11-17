@@ -371,9 +371,14 @@ async def download_m3u8_stream(
         "ffmpeg",
         "-y",
         "-headers", header_str,
+        "-reconnect", "1",
+        "-reconnect_at_eof", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
         "-i", m3u8_url,
         "-c", "copy",
         "-bsf:a", "aac_adtstoasc",
+        "-movflags", "+faststart",
         str(target_path)
     ]
 

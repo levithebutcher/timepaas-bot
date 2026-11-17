@@ -30,6 +30,8 @@ def create_bot_client() -> Client:
         api_id=API_ID,
         api_hash=API_HASH,
         bot_token=BOT_TOKEN,
+        workers=32,
+        max_concurrent_transmissions=10,
         plugins=dict(root="bot/handlers")
     )
     return app

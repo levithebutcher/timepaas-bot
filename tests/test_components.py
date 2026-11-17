@@ -481,6 +481,26 @@ class TestComponents(unittest.TestCase):
         res = asyncio.run(resolve_dump_chat(client, "", reply_to=reply_msg))
         self.assertEqual(res.id, -1005555555)
 
+    def test_deliver_dumped_album_cleans_dump(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from bot.core.uploader import deliver_dumped_album
+
+        client = MagicMock()
+        client.send_media_group = AsyncMock()
+        client.delete_messages = AsyncMock()
+
+        items = [
+            {"file_id": "f1", "caption": "c1", "duration": 10, "width": 1280, "height": 720, "msg_id": 101},
+            {"file_id": "f2", "caption": "c2", "duration": 20, "width": 1280, "height": 720, "msg_id": 102}
+        ]
+
+        asyncio.run(deliver_dumped_album(client, target_chat_id=1234, dump_chat_id=-100999, dumped_items=items))
+
+        # Check send_media_group was called
+        client.send_media_group.assert_called_once()
+        # Check that dump messages were auto-deleted from dump channel!
+        client.delete_messages.assert_called_once_with(chat_id=-100999, message_ids=[101, 102])
+
 
 if __name__ == "__main__":
     unittest.main()
