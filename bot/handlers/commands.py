@@ -217,23 +217,58 @@ async def resolve_dump_chat(client: Client, raw_input: str = "", reply_to: Messa
         invite_hash = invite_match.group(1)
         full_invite = f"https://t.me/+{invite_hash}"
         logger.info(f"Attempting to resolve private invite link: {full_invite}")
-        join_err = None
-        try:
-            chat = await client.join_chat(full_invite)
-            if chat:
-                return chat
-        except Exception as err:
-            join_err = err
-            logger.debug(f"join_chat with invite failed: {err}; trying get_chat...")
 
+        # Check if client is a bot or user account
+        is_bot = True
         try:
-            return await client.get_chat(full_invite)
-        except Exception as get_err:
-            logger.debug(f"get_chat with invite failed: {get_err}")
+            me = await client.get_me()
+            is_bot = getattr(me, "is_bot", True)
+        except Exception:
+            pass
+
+        if not is_bot:
+            # Userbot / user account can join directly via invite link
+            try:
+                chat = await client.join_chat(full_invite)
+                if chat:
+                    return chat
+            except Exception as join_err:
+                logger.debug(f"User join_chat failed on invite {full_invite}: {join_err}")
+
+        # For Telegram Bots: Bots cannot use join_chat (ImportChatInvite).
+        # We query CheckChatInvite to resolve peer or identify membership.
+        try:
+            from pyrogram.raw.functions.messages import CheckChatInvite
+            from pyrogram.raw.types import ChatInvite, ChatInviteAlready
+            from pyrogram.utils import get_channel_id
+
+            res = await client.invoke(CheckChatInvite(hash=invite_hash))
+            if isinstance(res, ChatInviteAlready):
+                # Bot is already added to this channel!
+                target_id = get_channel_id(res.chat.id)
+                logger.info(f"Resolved invite link to already joined channel ID: {target_id}")
+                return await client.get_chat(target_id)
+            elif isinstance(res, ChatInvite):
+                # Bot is not added to the channel yet
+                ch_title = getattr(res, "title", None) or "Private Channel"
+                raise RuntimeError(
+                    f"Bot channel '<b>{ch_title}</b>' me added nahi hai!\n\n"
+                    f"⚠️ Telegram security policy ke mutabiq Bot private invite link se khud join nahi ho sakta.\n\n"
+                    f"<b>Bas ye 1 step karein:</b>\n"
+                    f"1. Apne channel me jayein ➔ <b>Channel Settings</b> ➔ <b>Administrators</b> ➔ <b>Add Admin</b>.\n"
+                    f"2. Is Bot ko search karke Administrator banayein (with <i>'Post Messages'</i> permission).\n"
+                    f"3. Bot add hote hi ya to link dobara bhej dein, ya channel me direct <code>/setdump</code> likh dein!"
+                )
+        except Exception as check_err:
+            if "Bot channel" in str(check_err):
+                raise
+            logger.debug(f"CheckChatInvite failed for {invite_hash}: {check_err}")
             raise RuntimeError(
-                f"Could not connect via private invite link. "
-                f"Please ensure the Bot is added as an Administrator with 'Post Messages' permission in that channel! "
-                f"({join_err or get_err})"
+                f"Invite link resolve nahi ho paya ({check_err}).\n\n"
+                f"💡 <b>Sabse asaan tareeqa:</b>\n"
+                f"1. Bot ko apne channel me <b>Admin</b> banayein.\n"
+                f"2. Channel me jakar seedha <code>/setdump</code> likhein (bot khud connect ho jayega)!\n"
+                f"<b>YA</b> channel ka koi post yahan forward karke <code>/setdump</code> reply karein."
             )
 
     # 4. Public channel link or message link: https://t.me/channel_name/123 or https://t.me/channel_name
@@ -267,8 +302,39 @@ async def resolve_dump_chat(client: Client, raw_input: str = "", reply_to: Messa
     return await client.get_chat(target)
 
 
-@Client.on_message(filters.command(["setdump", "setchannel"]) & filters.private)
+@Client.on_message(filters.command(["setdump", "setchannel"]))
 async def setdump_handler(client: Client, message: Message):
+    # 1. If executed DIRECTLY inside a Channel, Supergroup, or Group:
+    chat_type_str = str(getattr(getattr(message, "chat", None), "type", "")).lower()
+    is_channel_or_group = any(t in chat_type_str for t in ("channel", "supergroup", "group"))
+
+    if is_channel_or_group:
+        user_id = message.from_user.id if getattr(message, "from_user", None) else 0
+        if user_id and not is_authorized(user_id):
+            return
+
+        try:
+            await set_dump_channel(message.chat.id)
+            title = message.chat.title or "Dump Channel"
+            uname = f"@{message.chat.username}" if getattr(message.chat, "username", None) else "Private Channel"
+
+            await message.reply_text(
+                f"<blockquote>"
+                f"✅ <b>THIS CHANNEL IS NOW CONFIGURED AS DUMP!</b>\n\n"
+                f"• <b>Title:</b> {title}\n"
+                f"• <b>ID:</b> <code>{message.chat.id}</code>\n"
+                f"• <b>Type:</b> {uname}\n"
+                f"• <b>Mode:</b> Server-to-Server High Speed Relay (Option B)\n\n"
+                f"<i>All video albums will now be uploaded to this channel and copied to users instantly with zero local disk bloat!</i>"
+                f"</blockquote>"
+            )
+            return
+        except Exception as e:
+            logger.error(f"Failed to set dump channel directly from chat {message.chat.id}: {e}")
+            await message.reply_text(f"❌ Failed to configure dump: <code>{e}</code>")
+            return
+
+    # 2. If executed in PRIVATE chat:
     if not is_authorized(message.from_user.id):
         return
 
@@ -281,6 +347,7 @@ async def setdump_handler(client: Client, message: Message):
             "<blockquote>"
             "⚠️ <b>Usage:</b> <code>/setdump &lt;link / username / ID&gt;</code>\n\n"
             "<b>Auto-Fetch supports all formats:</b>\n"
+            "• <b>Run in Channel:</b> Simply type <code>/setdump</code> directly inside the Dump Channel!\n"
             "• <b>Private Message Link:</b> <code>https://t.me/c/1234567890/45</code>\n"
             "• <b>Private Invite Link:</b> <code>https://t.me/+AbCdEfGh...</code>\n"
             "• <b>Public Channel:</b> <code>@mychannel</code> or <code>https://t.me/mychannel</code>\n"

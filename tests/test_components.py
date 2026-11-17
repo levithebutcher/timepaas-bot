@@ -438,10 +438,13 @@ class TestComponents(unittest.TestCase):
     def test_resolve_dump_chat_formats(self):
         from unittest.mock import AsyncMock, MagicMock
         from bot.handlers.commands import resolve_dump_chat
+        from pyrogram.raw.types import ChatInviteAlready
 
         client = MagicMock()
+        client.get_me = AsyncMock(return_value=MagicMock(is_bot=False))
         client.get_chat = AsyncMock(side_effect=lambda cid: MagicMock(id=cid, title=f"Chat {cid}"))
         client.join_chat = AsyncMock(side_effect=lambda inv: MagicMock(id=-1009999999, title="Invite Chat"))
+        client.invoke = AsyncMock(return_value=ChatInviteAlready(chat=MagicMock(id=1234567890)))
 
         # 1. Private channel message link (t.me/c/<id>/<msg>)
         res = asyncio.run(resolve_dump_chat(client, "https://t.me/c/1234567890/45"))
@@ -463,9 +466,14 @@ class TestComponents(unittest.TestCase):
         res = asyncio.run(resolve_dump_chat(client, "-1001234567890"))
         self.assertEqual(res.id, -1001234567890)
 
-        # 6. Private invite link
+        # 6. Private invite link (Userbot mode)
         res = asyncio.run(resolve_dump_chat(client, "https://t.me/+AbCdEfGh"))
         self.assertEqual(res.id, -1009999999)
+
+        # 6b. Private invite link (Bot mode with CheckChatInvite)
+        client.get_me = AsyncMock(return_value=MagicMock(is_bot=True))
+        res_bot = asyncio.run(resolve_dump_chat(client, "https://t.me/+AbCdEfGh"))
+        self.assertEqual(res_bot.id, -1001234567890)
 
         # 7. Forwarded message in reply
         reply_msg = MagicMock()
