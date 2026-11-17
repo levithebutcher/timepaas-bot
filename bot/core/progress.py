@@ -153,7 +153,7 @@ async def update_status_message(
                 eta = (total - current) / speed
                 eta_str = format_time(eta)
 
-    smooth_bar = generate_smooth_bar(current, total, length=10)
+    bar = generate_bar(current, total, length=10)
     curr_str = format_size(current)
     total_str = format_size(total) if total > 0 else "Unknown"
 
@@ -166,7 +166,7 @@ async def update_status_message(
         f"<blockquote>"
         f"⚡ <b>TIMEPASS LEECH</b> • {mode_tag}\n"
         f"📁 <code>{display_name}</code>\n"
-        f"📊 <code>{smooth_bar}</code>\n"
+        f"📊 <code>{bar}</code>\n"
         f"💾 <b>{curr_str}</b> / {total_str} • ⚡ <b>{speed_str}</b> • ⏱ <b>{eta_str}</b>\n"
         f"🔄 {action}"
         f"</blockquote>"
@@ -263,7 +263,7 @@ async def update_album_pipeline_dashboard(
                     cb = dl_item.get("current", 0)
                     tb = dl_item.get("total", 0)
                     sp = dl_item.get("speed_str", "--")
-                    bar = generate_smooth_bar(cb, tb, length=8)
+                    bar = generate_bar(cb, tb, length=8)
                     lines.append(f"• <code>{fn}</code> — {bar} ({format_size(cb)}) • ⚡ {sp}")
             else:
                 lines.append("• <i>Finalizing pack...</i>")
@@ -276,7 +276,7 @@ async def update_album_pipeline_dashboard(
             tot_b = current_dl.get("total", 0)
             speed = current_dl.get("speed_str", "--")
             eta = current_dl.get("eta_str", "--")
-            bar = generate_smooth_bar(curr_b, tot_b, length=8)
+            bar = generate_bar(curr_b, tot_b, length=8)
             dl_text = (
                 f"📥 <b>Downloading:</b> <code>{file_name}</code>\n"
                 f"• {bar} ({format_size(curr_b)} / {format_size(tot_b)}) • ⚡ {speed} • ⏱ {eta}"
@@ -288,12 +288,12 @@ async def update_album_pipeline_dashboard(
             dl_text = "📥 <b>Downloading:</b> <i>Preparing next pack...</i>"
 
     overall_pct = (completed_files / total_files * 100.0) if total_files > 0 else 0.0
-    smooth_overall = generate_smooth_bar(completed_files, total_files, length=10)
+    overall_bar = generate_bar(completed_files, total_files, length=10)
 
     text = (
         f"<blockquote>"
         f"🎬 <b>ALBUM PIPELINE</b> • <b>{completed_files}/{total_files} Done</b> ({overall_pct:.0f}%)\n"
-        f"📊 <code>{smooth_overall}</code>\n\n"
+        f"📊 <code>{overall_bar}</code>\n\n"
         f"{dl_text}\n\n"
         f"{up_text}\n\n"
         f"🎞 <b>Albums:</b> {uploaded_albums}/{total_albums} • 💾 <b>Disk:</b> {free_gb:.1f} GB Free"

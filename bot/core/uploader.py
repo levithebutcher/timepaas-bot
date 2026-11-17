@@ -173,6 +173,37 @@ async def generate_thumbnail(file_path: Path, thumb_path: Path, duration: int = 
     return None
 
 
+async def prepare_video_upload_data(
+    file_path: Path,
+    custom_thumb: str = None
+) -> tuple[Path, int, int, int, Path | None, str | None]:
+    """
+    Unified helper to prepare a video for Telegram upload:
+    1. Ensures audio track exists (so Telegram renders a playable video instead of a GIF).
+    2. Probes video duration, width, and height.
+    3. Handles custom thumbnail or generates a unique temporary thumbnail frame.
+    Returns:
+        (prepared_file_path, duration, width, height, generated_thumb_path, actual_thumb_str)
+    """
+    async with _METADATA_SEMAPHORE:
+        duration, width, height, has_audio = await get_video_metadata(file_path)
+        if not has_audio:
+            file_path = await ensure_video_has_audio(file_path)
+            duration, width, height, _ = await get_video_metadata(file_path)
+
+        thumb_to_use = custom_thumb if (custom_thumb and Path(custom_thumb).exists()) else None
+        generated_thumb = None
+
+        if not thumb_to_use:
+            generated_thumb = file_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{file_path.stem}.jpg"
+            thumb_to_use = await generate_thumbnail(file_path, generated_thumb, duration)
+            if not thumb_to_use:
+                generated_thumb = None
+
+        actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
+        return file_path, duration, width, height, generated_thumb, actual_thumb
+
+
 async def upload_file(
     client,
     chat_id: int,
@@ -191,26 +222,13 @@ async def upload_file(
         raise FileNotFoundError(f"File to upload does not exist or is empty: {file_path}")
 
     async with _UPLOAD_SEMAPHORE:
-        thumb_to_use = None
         generated_thumb = None
-
-        if custom_thumb and Path(custom_thumb).exists():
-            thumb_to_use = custom_thumb
 
         try:
             if not as_document and file_path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
-                duration, width, height, has_audio = await get_video_metadata(file_path)
-                if not has_audio:
-                    file_path = await ensure_video_has_audio(file_path)
-                    duration, width, height, has_audio = await get_video_metadata(file_path)
-
-                if not thumb_to_use:
-                    # Isolated unique thumbnail per task/file to prevent race condition across workers
-                    generated_thumb = file_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{file_path.stem}.jpg"
-                    thumb_to_use = await generate_thumbnail(file_path, generated_thumb, duration)
-
-                actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
-
+                file_path, duration, width, height, generated_thumb, actual_thumb = await prepare_video_upload_data(
+                    file_path, custom_thumb
+                )
                 try:
                     sent = await client.send_video(
                         chat_id=chat_id,
@@ -228,12 +246,12 @@ async def upload_file(
                     logger.warning(f"send_video failed ({e}); falling back to send_document for {file_path.name}")
 
             # Fallback to document upload
-            actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
+            doc_thumb = str(custom_thumb) if (custom_thumb and Path(custom_thumb).exists() and Path(custom_thumb).stat().st_size > 0) else None
             sent = await client.send_document(
                 chat_id=chat_id,
                 document=str(file_path),
                 caption=caption,
-                thumb=actual_thumb,
+                thumb=doc_thumb,
                 progress=progress_callback
             )
             return sent
@@ -273,31 +291,21 @@ async def upload_video_albums(
         temp_thumbs = []
 
         async def prepare_media_item(v_path, caption):
-            async with _METADATA_SEMAPHORE:
-                duration, width, height, has_audio = await get_video_metadata(v_path)
-                if not has_audio:
-                    file_path = await ensure_video_has_audio(v_path)
-                    duration, width, height, has_audio = await get_video_metadata(file_path)
-                else:
-                    file_path = v_path
+            file_path, duration, width, height, gen_thumb, actual_thumb = await prepare_video_upload_data(
+                v_path, custom_thumb
+            )
+            if gen_thumb:
+                temp_thumbs.append(gen_thumb)
 
-                thumb_to_use = custom_thumb if custom_thumb and Path(custom_thumb).exists() else None
-                if not thumb_to_use:
-                    gen_thumb = file_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{file_path.stem}.jpg"
-                    thumb_to_use = await generate_thumbnail(file_path, gen_thumb, duration)
-                    if thumb_to_use:
-                        temp_thumbs.append(thumb_to_use)
-
-                actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
-                return InputMediaVideo(
-                    media=str(file_path),
-                    thumb=actual_thumb,
-                    caption=caption,
-                    duration=duration,
-                    width=width,
-                    height=height,
-                    supports_streaming=True
-                )
+            return InputMediaVideo(
+                media=str(file_path),
+                thumb=actual_thumb,
+                caption=caption,
+                duration=duration,
+                width=width,
+                height=height,
+                supports_streaming=True
+            )
 
         # Parallelize video probing and thumbnail generation across all pack videos (capped by _METADATA_SEMAPHORE)
         media_group = list(await asyncio.gather(*(prepare_media_item(vp, cap) for vp, cap in chunk)))
@@ -338,22 +346,9 @@ async def upload_single_to_dump(
     if not file_path.exists() or file_path.stat().st_size == 0:
         raise FileNotFoundError(f"File to upload does not exist or is empty: {file_path}")
 
-    thumb_to_use = None
-    generated_thumb = None
-    if custom_thumb and Path(custom_thumb).exists():
-        thumb_to_use = custom_thumb
-
-    async with _METADATA_SEMAPHORE:
-        duration, width, height, has_audio = await get_video_metadata(file_path)
-        if not has_audio:
-            file_path = await ensure_video_has_audio(file_path)
-            duration, width, height, has_audio = await get_video_metadata(file_path)
-
-        if not thumb_to_use:
-            generated_thumb = file_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{file_path.stem}.jpg"
-            thumb_to_use = await generate_thumbnail(file_path, generated_thumb, duration)
-
-    actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
+    file_path, duration, width, height, generated_thumb, actual_thumb = await prepare_video_upload_data(
+        file_path, custom_thumb
+    )
 
     async with _UPLOAD_SEMAPHORE:
         try:

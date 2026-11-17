@@ -69,6 +69,24 @@ class BatchInfo:
     status_msg_id: int = 0
 
 
+def resolve_clean_title(media_info: dict, url: str) -> str:
+    """Derives a clean, non-generic filename from media info or URL slug."""
+    stream_url = media_info.get("url", "")
+    title = media_info.get("title") or derive_filename(stream_url)
+    generic_names = (
+        "master.mp4", "extracted_media.mp4", "download.mp4", "video.mp4",
+        "browser_media.mp4", "stream_video.mp4", "playlist.m3u8",
+        "media_download.mp4", "general_video.mp4", "media_stream.mp4"
+    )
+    if title.lower() in generic_names:
+        url_slug = [p for p in urlparse(url).path.split("/") if p and p not in ("v", "e", "d", "f", "watch", "file", "embed")]
+        if url_slug:
+            clean_slug = re.sub(r"[^\w\s\.\-]", "", url_slug[-1]).strip()
+            if clean_slug:
+                title = f"{clean_slug}.mp4"
+    return derive_filename(title)
+
+
 class QueueManager:
     def __init__(self):
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
@@ -187,6 +205,10 @@ class QueueManager:
                 task.status = "Cancelled"
                 task.cancel_event.set()
                 cancelled_count += 1
+        for batch in self.batches.values():
+            if batch.user_id == user_id and not batch.cancel_event.is_set():
+                batch.cancel_event.set()
+                cancelled_count += 1
         return cancelled_count
 
     async def start_workers(self, client, num_workers: int = MAX_CONCURRENT_TASKS):
@@ -234,7 +256,11 @@ class QueueManager:
                 force=True
             )
 
-            media_info = await extract_media_link(task.url)
+            try:
+                media_info = await asyncio.wait_for(extract_media_link(task.url), timeout=60.0)
+            except asyncio.TimeoutError:
+                raise RuntimeError("Extraction timed out after 60s (host unresponsive).")
+
             if not media_info or not media_info.get("url"):
                 raise RuntimeError("No downloadable video or media stream could be extracted from page.")
 
@@ -243,14 +269,7 @@ class QueueManager:
 
             stream_url = media_info["url"]
             stream_type = media_info.get("type", "direct")
-            title = media_info.get("title") or derive_filename(stream_url)
-            # If title is generic (e.g. master.mp4), derive unique name from task.url slug
-            if title.lower() in ("master.mp4", "extracted_media.mp4", "download.mp4", "video.mp4", "browser_media.mp4", "stream_video.mp4", "playlist.m3u8"):
-                url_slug = [p for p in urlparse(task.url).path.split("/") if p and p not in ("v", "e", "d", "f", "watch", "file")]
-                if url_slug:
-                    clean_slug = re.sub(r"[^\w\s\.\-]", "", url_slug[-1]).strip()
-                    if clean_slug:
-                        title = f"{clean_slug}.mp4"
+            title = resolve_clean_title(media_info, task.url)
             headers = media_info.get("headers", {})
 
             # Step 2: Download
@@ -373,6 +392,13 @@ class QueueManager:
                     force=True
                 )
                 parts_to_upload = await split_video_file(downloaded_file, MAX_SPLIT_SIZE_BYTES)
+                # Free disk space immediately by removing original oversized file if split succeeded
+                if len(parts_to_upload) > 1 and downloaded_file not in parts_to_upload:
+                    try:
+                        downloaded_file.unlink(missing_ok=True)
+                        logger.info(f"Unlinked original oversized file {downloaded_file.name} to free disk space.")
+                    except Exception as e:
+                        logger.debug(f"Could not unlink original file {downloaded_file}: {e}")
 
             batch = self.batches.get(task.batch_id)
             if batch and batch.is_album:
@@ -637,14 +663,7 @@ class QueueManager:
 
                             stream_url = media_info["url"]
                             stream_type = media_info.get("type", "direct")
-                            title = media_info.get("title") or derive_filename(stream_url)
-                            if title.lower() in ("master.mp4", "extracted_media.mp4", "download.mp4", "video.mp4", "browser_media.mp4", "stream_video.mp4", "playlist.m3u8"):
-                                url_slug = [p for p in urlparse(url).path.split("/") if p and p not in ("v", "e", "d", "f", "watch", "file")]
-                                if url_slug:
-                                    clean_slug = re.sub(r"[^\w\s\.\-]", "", url_slug[-1]).strip()
-                                    if clean_slug:
-                                        title = f"{clean_slug}.mp4"
-
+                            title = resolve_clean_title(media_info, url)
                             headers = media_info.get("headers", {})
                             target_path = chunk_dir / f"{item_idx + 1:02d}_{title}"
                             start_dl_time = time.time()
@@ -696,43 +715,53 @@ class QueueManager:
                                     cancel_event=batch.cancel_event
                                 )
 
-                            caption = user_settings.get("custom_caption") or f"🎬 `{dl_file.name}`"
+                            # Ensure album items exceeding Telegram limit are split safely
+                            album_parts = [dl_file]
+                            if dl_file.exists() and dl_file.stat().st_size > MAX_SPLIT_SIZE_BYTES:
+                                logger.info(f"Album item {dl_file.name} exceeds {MAX_SPLIT_SIZE_BYTES} bytes. Splitting...")
+                                split_parts = await split_video_file(dl_file, MAX_SPLIT_SIZE_BYTES)
+                                if len(split_parts) > 1 and dl_file not in split_parts:
+                                    dl_file.unlink(missing_ok=True)
+                                album_parts = split_parts
 
-                            # Option B (Dump Relay Mode): Upload immediately and clear local disk
-                            if dump_channel:
-                                try:
-                                    async with dl_lock:
-                                        active_dls[item_idx] = {
-                                            "file_name": f"Relaying {title[:22]}...",
-                                            "current": dl_file.stat().st_size if dl_file.exists() else 0,
-                                            "total": dl_file.stat().st_size if dl_file.exists() else 0,
-                                            "speed_str": "Relaying",
-                                            "eta_str": "--",
-                                            "item_num": item_idx + 1,
-                                            "chunk_total": len(chunk_urls)
-                                        }
-                                    await refresh_dashboard(force=True)
+                            for sub_part in album_parts:
+                                part_caption = user_settings.get("custom_caption") or f"🎬 `{sub_part.name}`"
 
-                                    dump_info = await upload_single_to_dump(
-                                        client=client,
-                                        dump_chat_id=dump_channel,
-                                        file_path=dl_file,
-                                        caption=caption,
-                                        custom_thumb=user_settings.get("custom_thumb")
-                                    )
+                                # Option B (Dump Relay Mode): Upload immediately and clear local disk
+                                if dump_channel:
+                                    try:
+                                        async with dl_lock:
+                                            active_dls[item_idx] = {
+                                                "file_name": f"Relaying {sub_part.name[:22]}...",
+                                                "current": sub_part.stat().st_size if sub_part.exists() else 0,
+                                                "total": sub_part.stat().st_size if sub_part.exists() else 0,
+                                                "speed_str": "Relaying",
+                                                "eta_str": "--",
+                                                "item_num": item_idx + 1,
+                                                "chunk_total": len(chunk_urls)
+                                            }
+                                        await refresh_dashboard(force=True)
+
+                                        dump_info = await upload_single_to_dump(
+                                            client=client,
+                                            dump_chat_id=dump_channel,
+                                            file_path=sub_part,
+                                            caption=part_caption,
+                                            custom_thumb=user_settings.get("custom_thumb")
+                                        )
+                                        async with dl_lock:
+                                            downloaded_items.append((dump_info, part_caption, item_idx))
+                                    except Exception as dump_err:
+                                        logger.warning(f"Dump relay failed for {sub_part.name} ({dump_err}), keeping local file...")
+                                        async with dl_lock:
+                                            downloaded_items.append((sub_part, part_caption, item_idx))
+                                else:
+                                    # Option A: Keep local file for double-buffered album batching
                                     async with dl_lock:
-                                        downloaded_items.append((dump_info, caption, item_idx))
-                                        batch.done_count += 1
-                                except Exception as dump_err:
-                                    logger.warning(f"Dump relay failed for {title} ({dump_err}), keeping local file...")
-                                    async with dl_lock:
-                                        downloaded_items.append((dl_file, caption, item_idx))
-                                        batch.done_count += 1
-                            else:
-                                # Option A: Keep local file for double-buffered album batching
-                                async with dl_lock:
-                                    downloaded_items.append((dl_file, caption, item_idx))
-                                    batch.done_count += 1
+                                        downloaded_items.append((sub_part, part_caption, item_idx))
+
+                            async with dl_lock:
+                                batch.done_count += 1
 
                         except asyncio.CancelledError:
                             batch.cancelled_count += 1
@@ -781,26 +810,27 @@ class QueueManager:
                         }
                         await refresh_dashboard(force=True)
                         try:
-                            # If items are already in dump channel (Option B), deliver server-to-server instantly!
-                            if dump_channel and isinstance(items[0][0], dict):
-                                dumped_list = [item[0] for item in items]
+                            # Partition items: Option B (server dumped dicts) and Option A (local Path files)
+                            dumped_list = [item[0] for item in items if isinstance(item[0], dict)]
+                            local_files = [(item[0], item[1]) for item in items if isinstance(item[0], Path) and item[0].exists()]
+
+                            if dump_channel and dumped_list:
                                 await deliver_dumped_album(
                                     client=client,
                                     target_chat_id=batch.chat_id,
                                     dump_chat_id=dump_channel,
                                     dumped_items=dumped_list
                                 )
-                            else:
-                                # Option A: Local double-buffer upload
-                                valid_files = [(item[0], item[1]) for item in items if isinstance(item[0], Path) and item[0].exists()]
-                                if valid_files:
-                                    await upload_video_albums(
-                                        client=client,
-                                        chat_id=batch.chat_id,
-                                        video_items=valid_files,
-                                        custom_thumb=user_settings.get("custom_thumb"),
-                                        chunk_size=10
-                                    )
+
+                            if local_files:
+                                await upload_video_albums(
+                                    client=client,
+                                    chat_id=batch.chat_id,
+                                    video_items=local_files,
+                                    custom_thumb=user_settings.get("custom_thumb"),
+                                    chunk_size=10
+                                )
+
                             uploaded_albums += 1
                         except Exception as ex:
                             logger.error(f"Error uploading video album {alb_idx + 1}: {ex}")

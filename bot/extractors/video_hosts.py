@@ -56,9 +56,11 @@ LULUSTREAM_DOMAINS = {
     "luluvdo.com", "luluvideo.com", "luluvideo.net", "luluvideo.org",
     "luluvid.com", "luluvid.net", "luluvids.com", "luluvids.net",
     "luluvd.com", "luluvd.net", "luluvdoo.com", "luluvido.com",
+    "luluvido.net", "luluvido.org", "luluvdo.net", "luluvdo.org",
     # LuluStream & mirrors
-    "lulustream.com", "lulustream.net", "lulu.to", "lulu.st", "lulusp.com",
-    "pondr.org", "lulupdo.com", "streamhihi.com", "cdn1.site"
+    "lulustream.com", "lulustream.net", "lulustream.org", "lulustream.to",
+    "lulu.to", "lulu.st", "lulusp.com", "pondr.org", "lulupdo.com",
+    "streamhihi.com", "cdn1.site"
 }
 
 STREAMFILES_DOMAINS = {
@@ -112,7 +114,7 @@ def unpack_dean_edwards(payload: str) -> str:
     Handles multiple blocks, single/double quotes, and returns all unpacked code.
     e.g. eval(function(p,a,c,k,e,d){...}('...', a, c, '...'.split('|')))
     """
-    pattern = r"eval\(function\(p,a,c,k,e,d\)\{.*?return p\}\((['\"])(.*?)\1,\s*(\d+),\s*(\d+),\s*(['\"])(.*?)\5\.split\('\|'\)"
+    pattern = r"eval\(function\(p,a,c,k,e,d\)\{.*?return p\}\((['\"])(.*?)\1,\s*(\d+),\s*(\d+),\s*(['\"])(.*?)\5\.split\(['\"]\|['\"]\)"
     unpacked_blocks = []
     for m in re.finditer(pattern, payload, re.DOTALL):
         try:
@@ -134,6 +136,18 @@ def unpack_dean_edwards(payload: str) -> str:
         except Exception:
             continue
     return "\n".join(unpacked_blocks)
+
+
+def sanitize_title(raw_title: str, default: str = "video.mp4") -> str:
+    """Sanitizes raw scraped titles into clean, valid filenames."""
+    if not raw_title:
+        return default
+    clean = re.sub(r"[^\w\s\.\-]", "", raw_title).strip().replace(" ", "_")
+    if not clean:
+        return default
+    if not clean.lower().endswith((".mp4", ".mkv", ".webm")):
+        clean += ".mp4"
+    return clean
 
 
 def is_matching_host(netloc: str, domain_set: set[str]) -> bool:
@@ -162,7 +176,7 @@ def is_luluvid_host(netloc: str) -> bool:
     netloc = netloc.lower().split(":")[0]
     if is_matching_host(netloc, LULUSTREAM_DOMAINS):
         return True
-    if any(k in netloc for k in ("luluvdo", "luluvideo", "lulustream", "luluvid", "luluvd", "lulupdo")):
+    if any(k in netloc for k in ("luluvdo", "luluvideo", "lulustream", "luluvid", "luluvd", "lulupdo", "luluvido")):
         return True
     return False
 
@@ -462,16 +476,13 @@ async def resolve_archivebate(url: str) -> dict:
                 html = await resp.text()
 
         # Extract title
-        title = "archivebate_video.mp4"
         title_m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+        raw_title = ""
         if title_m:
             raw_title = title_m.group(1).split("webcam recordings")[0].strip(" ,-|")
             if not raw_title:
                 raw_title = title_m.group(1).split("|")[0].strip()
-            if raw_title:
-                clean_title = re.sub(r'[^\w\s\.\-]', '', raw_title).strip().replace(" ", "_")
-                if clean_title:
-                    title = f"{clean_title}.mp4"
+        title = sanitize_title(raw_title, default="archivebate_video.mp4")
 
         # 1. Search for fid input in download form
         embedded_url = None
@@ -490,6 +501,9 @@ async def resolve_archivebate(url: str) -> dict:
                 embedded_url = ifr_matches[0].strip()
 
         if embedded_url:
+            if not embedded_url.startswith(("http://", "https://")):
+                from urllib.parse import urljoin
+                embedded_url = urljoin("https://www.archivebate.com/", embedded_url)
             logger.info(f"Archivebate resolved underlying host: {embedded_url}")
             host_res = await extract_from_video_hosts(embedded_url)
             if host_res and host_res.get("url"):
@@ -555,10 +569,13 @@ async def resolve_luluvid(url: str) -> dict:
     parts = [p for p in parsed.path.split("/") if p and p not in ("e", "d", "v", "embed")]
     candidate_urls = []
     if parts:
-        file_id = parts[0]
-        # /e/{id} is the embed player URL
+        raw_file_id = parts[0]
+        file_id = raw_file_id.rsplit(".", 1)[0] if "." in raw_file_id else raw_file_id
+        # Primary embed format
         candidate_urls.append(f"{base_origin}/e/{file_id}")
+        candidate_urls.append(f"https://lulustream.com/e/{file_id}")
         candidate_urls.append(f"{base_origin}/{file_id}")
+        candidate_urls.append(f"https://lulustream.com/{file_id}")
     if url not in candidate_urls:
         candidate_urls.append(url)
 
@@ -585,9 +602,7 @@ async def resolve_luluvid(url: str) -> dict:
                     raw_title = title_match.group(1).strip()
                     clean_title = re.sub(r"\s*-\s*Lulu(stream|video|vid|vdo)(\.mp4)?", "", raw_title, flags=re.IGNORECASE).strip()
                     if clean_title:
-                        if not clean_title.lower().endswith(".mp4"):
-                            clean_title += ".mp4"
-                        title = clean_title
+                        title = sanitize_title(clean_title, default="luluvideo.mp4")
 
                 # Unescape slashes if JSON/JS escaped (\/ -> /)
                 clean_html = html.replace(r"\/", "/")
@@ -595,7 +610,13 @@ async def resolve_luluvid(url: str) -> dict:
                 # 1. Direct m3u8 regex check in HTML
                 m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', clean_html)
 
-                # 2. Check sources: [{file: "..."}] in JWPlayer / VideoJS configuration
+                # 2. Playerjs or standard JS file configs: file: "https://..." or src: "https://..."
+                if not m3u8_matches:
+                    file_configs = re.findall(r'(?:file|src)\s*:\s*["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', clean_html)
+                    if file_configs:
+                        m3u8_matches.extend(file_configs)
+
+                # 3. Check sources: [{file: "..."}] in JWPlayer / VideoJS configuration
                 if not m3u8_matches:
                     source_matches = re.findall(r'sources\s*:\s*\[\s*\{\s*(?:file|src)\s*:\s*["\']([^"\']+)["\']', clean_html)
                     for sm in source_matches:
@@ -603,7 +624,7 @@ async def resolve_luluvid(url: str) -> dict:
                             m3u8_matches.append(sm)
                             break
 
-                # 3. Unpack Dean Edwards P.A.C.K.E.R. scripts
+                # 4. Unpack Dean Edwards P.A.C.K.E.R. scripts
                 if not m3u8_matches:
                     unpacked = unpack_dean_edwards(html)
                     if unpacked:
@@ -613,8 +634,12 @@ async def resolve_luluvid(url: str) -> dict:
                             source_unpacked = re.findall(r'["\'](https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*)["\']', clean_unpacked)
                             if source_unpacked:
                                 m3u8_matches = source_unpacked
+                        if not m3u8_matches:
+                            pjs_unpacked = re.findall(r'(?:file|src)\s*:\s*["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', clean_unpacked)
+                            if pjs_unpacked:
+                                m3u8_matches = pjs_unpacked
 
-                # 4. Check direct mp4 matches if no m3u8 found
+                # 5. Check direct mp4 matches if no m3u8 found
                 if not m3u8_matches:
                     mp4_matches = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', clean_html)
                     valid_mp4s = [m for m in mp4_matches if not any(x in m.lower() for x in ("thumb", "poster", "preview", "banner", "ad."))]
@@ -624,18 +649,23 @@ async def resolve_luluvid(url: str) -> dict:
                 if m3u8_matches:
                     stream_url = m3u8_matches[0]
                     stream_type = "m3u8" if ".m3u8" in stream_url else "direct"
+                    stream_headers = {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                        "Referer": "https://lulustream.com/",
+                        "Origin": "https://lulustream.com"
+                    }
                     logger.info(f"LuluStream/LuluVideo stream resolved: {title} ({stream_url[:50]}...)")
                     return {
                         "type": stream_type,
                         "url": stream_url,
                         "title": title,
-                        "headers": headers
+                        "headers": stream_headers
                     }
 
     except Exception as e:
         logger.debug(f"LuluStream static extraction failed for {url}: {e}")
 
-    # 5. Playwright Fallback if static regex failed (handles Cloudflare/JS challenge or dynamic token injection)
+    # 6. Playwright Fallback if static regex failed (handles Cloudflare/JS challenge or dynamic token injection)
     try:
         from bot.extractors.browser_ext import extract_with_playwright
         pw_target = candidate_urls[0] if candidate_urls else url
@@ -761,11 +791,8 @@ async def resolve_filemoon(url: str) -> dict:
         if m3u8_m:
             stream_url = m3u8_m[0]
             title_m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
-            title = "filemoon_video.mp4"
-            if title_m:
-                t = title_m.group(1).split("-")[0].strip()
-                if t:
-                    title = f"{re.sub(r'[^\\w\\s\\.\\-]', '', t).strip().replace(' ', '_')}.mp4"
+            raw_t = title_m.group(1).split("-")[0].strip() if title_m else ""
+            title = sanitize_title(raw_t, default="filemoon_video.mp4")
             return {
                 "type": "m3u8" if ".m3u8" in stream_url else "direct",
                 "url": stream_url,
@@ -791,7 +818,7 @@ async def resolve_voe(url: str) -> dict:
 
         m3u8_m = re.findall(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', html)
         if not m3u8_m:
-            b64_matches = re.findall(r"window\\.location\\.href\\s*=\\s*['\"](https?://[^'\"]+)['\"]", html)
+            b64_matches = re.findall(r"window\.location\.href\s*=\s*['\"](https?://[^'\"]+)['\"]", html)
             if b64_matches:
                 async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
                     async with session.get(b64_matches[0], allow_redirects=True) as resp2:
@@ -800,11 +827,8 @@ async def resolve_voe(url: str) -> dict:
 
         if m3u8_m:
             title_m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
-            title = "voe_video.mp4"
-            if title_m:
-                t = title_m.group(1).split("|")[0].strip()
-                if t:
-                    title = f"{re.sub(r'[^\\w\\s\\.\\-]', '', t).strip().replace(' ', '_')}.mp4"
+            raw_t = title_m.group(1).split("|")[0].strip() if title_m else ""
+            title = sanitize_title(raw_t, default="voe_video.mp4")
             return {
                 "type": "m3u8",
                 "url": m3u8_m[0],
@@ -827,17 +851,14 @@ async def resolve_mp4upload(url: str) -> dict:
                     return None
                 html = await resp.text()
 
-        mp4_m = re.findall(r'player\\.src\\(\\{\\s*type:\\s*["\']video/mp4["\'],\\s*src:\\s*["\']([^"\']+)["\']', html)
+        mp4_m = re.findall(r'player\.src\(\{\s*type:\s*["\']video/mp4["\'],\s*src:\s*["\']([^"\']+)["\']', html)
         if not mp4_m:
-            mp4_m = re.findall(r'["\'](https?://[^\\s"\'<>]+\\.mp4[^\\s"\'<>]*)["\']', html)
+            mp4_m = re.findall(r'["\'](https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)["\']', html)
 
         if mp4_m:
             title_m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
-            title = "mp4upload_video.mp4"
-            if title_m:
-                t = title_m.group(1).split("-")[0].strip()
-                if t:
-                    title = f"{re.sub(r'[^\\w\\s\\.\\-]', '', t).strip().replace(' ', '_')}.mp4"
+            raw_t = title_m.group(1).split("-")[0].strip() if title_m else ""
+            title = sanitize_title(raw_t, default="mp4upload_video.mp4")
             return {
                 "type": "direct",
                 "url": mp4_m[0],
@@ -862,13 +883,16 @@ async def resolve_vidguard(url: str) -> dict:
                 html = await resp.text()
 
         unpacked = unpack_dean_edwards(html) or html
-        stream_m = re.findall(r'["\'](https?://[^"\']+\\.(?:m3u8|mp4)[^"\']*)["\']', unpacked)
+        stream_m = re.findall(r'["\'](https?://[^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', unpacked)
         if stream_m:
             s_url = stream_m[0]
+            title_m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+            raw_t = title_m.group(1).strip() if title_m else ""
+            title = sanitize_title(raw_t, default="vidguard_video.mp4")
             return {
                 "type": "m3u8" if ".m3u8" in s_url else "direct",
                 "url": s_url,
-                "title": "vidguard_video.mp4",
+                "title": title,
                 "headers": headers
             }
     except Exception as e:
@@ -1020,10 +1044,7 @@ async def resolve_eporner(url: str) -> dict:
             if not title_m:
                 title_m = re.search(r'<meta property="og:title"\s*content="([^"]+)"', html)
             if title_m:
-                raw_t = title_m.group(1).strip()
-                clean_t = re.sub(r"[^\w\s\.\-]", "", raw_t).strip().replace(" ", "_")
-                if clean_t:
-                    title = clean_t if clean_t.lower().endswith(".mp4") else f"{clean_t}.mp4"
+                title = sanitize_title(title_m.group(1), default=f"eporner_{video_id or 'video'}.mp4")
 
             # 1. Official XHR API resolution using reverse-engineered calc_hash
             hash_m = re.search(r'hash\s*[:=]\s*["\']([\da-f]{32})["\']', html)
@@ -1073,6 +1094,8 @@ async def resolve_eporner(url: str) -> dict:
                                             stream_type = "m3u8"
 
                                 if stream_url:
+                                    if stream_url.startswith("//"):
+                                        stream_url = "https:" + stream_url
                                     return {
                                         "type": stream_type,
                                         "url": stream_url,

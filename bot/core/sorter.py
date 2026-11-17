@@ -36,8 +36,8 @@ def natural_sort_urls(urls: list[str]) -> list[str]:
             digits = re.findall(r"\d+", stem)
             target = stem
 
-            # 2. Only if the last segment was completely empty, check preceding segment
-            if not digits and not stem and len(segments) > 1:
+            # 2. If the last segment was completely empty or a generic web route, check preceding segment
+            if not digits and (not stem or stem.lower() in ("play", "view", "watch", "download", "index", "file")) and len(segments) > 1:
                 for seg in reversed(segments[:-1]):
                     seg_digits = re.findall(r"\d+", seg)
                     if seg_digits:
@@ -106,6 +106,9 @@ def split_into_album_chunks(items: list, max_size: int = 10, min_size: int = 2) 
       11 items -> [6, 5] (instead of 10 + 1)
       21 items -> [7, 7, 7] (instead of 10 + 10 + 1)
     """
+    if not items:
+        return []
+
     n = len(items)
     if n <= max_size:
         return [items]

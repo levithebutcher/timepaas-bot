@@ -6,7 +6,7 @@ from urllib.parse import urljoin, urlparse, parse_qs, unquote
 import aiohttp
 from bs4 import BeautifulSoup
 from bot.config import DEFAULT_USER_AGENT
-from bot.extractors.video_hosts import extract_from_video_hosts, unpack_dean_edwards
+from bot.extractors.video_hosts import extract_from_video_hosts, unpack_dean_edwards, sanitize_title
 
 logger = logging.getLogger(__name__)
 
@@ -22,28 +22,25 @@ def extract_page_title(soup: BeautifulSoup, default_title: str = "general_media.
     for prop in ("og:title", "twitter:title"):
         meta = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
         if meta and meta.get("content"):
-            raw = meta["content"].strip()
-            clean = re.sub(r"[^\w\s\.\-]", "", raw).strip().replace(" ", "_")
+            clean = sanitize_title(meta["content"].strip(), default="")
             if clean:
-                return clean if clean.lower().endswith((".mp4", ".mkv", ".webm")) else f"{clean}.mp4"
+                return clean
 
     # 2. <title> tag
     title_tag = soup.find("title")
     if title_tag and title_tag.text:
         raw = title_tag.text.strip()
-        # Strip common trailing site names (e.g. " - Watch Free Online")
         raw = re.sub(r"\s*[\-\|\–\:]\s*(Watch|Download|Free|HD|Full).*$", "", raw, flags=re.IGNORECASE).strip()
-        clean = re.sub(r"[^\w\s\.\-]", "", raw).strip().replace(" ", "_")
+        clean = sanitize_title(raw, default="")
         if clean:
-            return clean if clean.lower().endswith((".mp4", ".mkv", ".webm")) else f"{clean}.mp4"
+            return clean
 
     # 3. <h1> tag
     h1_tag = soup.find("h1")
     if h1_tag and h1_tag.text:
-        raw = h1_tag.text.strip()
-        clean = re.sub(r"[^\w\s\.\-]", "", raw).strip().replace(" ", "_")
+        clean = sanitize_title(h1_tag.text.strip(), default="")
         if clean:
-            return clean if clean.lower().endswith((".mp4", ".mkv", ".webm")) else f"{clean}.mp4"
+            return clean
 
     return default_title
 

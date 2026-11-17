@@ -181,6 +181,10 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
                     ".btn-download",
                     "#download",
                     "button:has-text('Play')",
+                    "#player",
+                    ".playerjs-play",
+                    ".pjs-play-btn",
+                    "div[id*='player']",
                     ".jw-display-icon-container",
                     ".jw-preview",
                     ".jw-video",
@@ -202,6 +206,14 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
                     except Exception:
                         pass
 
+                # Viewport center click fallback to trigger custom canvas or overlay video players
+                if not intercepted_url:
+                    try:
+                        await page.mouse.click(640, 360)
+                        await asyncio.sleep(1.5)
+                    except Exception:
+                        pass
+
             # Wait briefly for any delayed network calls or DOM updates
             wait_intervals = 5
             while not intercepted_url and wait_intervals > 0:
@@ -215,6 +227,27 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
                         break
                 except Exception:
                     pass
+
+            # Final check: Inspect rendered DOM HTML content for m3u8 or Playerjs file configuration
+            if not intercepted_url:
+                try:
+                    rendered_html = await page.content()
+                    if rendered_html:
+                        m3u8_in_dom = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', rendered_html)
+                        if m3u8_in_dom:
+                            intercepted_url = m3u8_in_dom[0]
+                            stream_type = "m3u8"
+                            intercepted_headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url}
+                            logger.info(f"Playwright captured m3u8 from rendered DOM content: {intercepted_url[:60]}...")
+                        else:
+                            pjs_match = re.findall(r'(?:file|src)\s*:\s*["\']([^"\']+\.(?:m3u8|mp4)[^\s"\'<>]*)["\']', rendered_html)
+                            if pjs_match:
+                                intercepted_url = pjs_match[0]
+                                stream_type = "m3u8" if ".m3u8" in intercepted_url else "direct"
+                                intercepted_headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url}
+                                logger.info(f"Playwright captured Playerjs file from rendered DOM: {intercepted_url[:60]}...")
+                except Exception as e:
+                    logger.debug(f"Error checking rendered DOM content: {e}")
 
             await browser.close()
 

@@ -38,9 +38,11 @@ class TestVideoHosts(unittest.TestCase):
         # LuluStream & LuluVideo Mirrors
         self.assertTrue(is_matching_host("luluvdo.com", LULUSTREAM_DOMAINS))
         self.assertTrue(is_matching_host("luluvideo.com", LULUSTREAM_DOMAINS))
+        self.assertTrue(is_matching_host("luluvido.com", LULUSTREAM_DOMAINS))
         self.assertTrue(is_matching_host("lulustream.com", LULUSTREAM_DOMAINS))
         self.assertTrue(is_luluvid_host("luluvdo.com"))
         self.assertTrue(is_luluvid_host("luluvideo.com"))
+        self.assertTrue(is_luluvid_host("luluvido.com"))
         self.assertTrue(is_luluvid_host("sub.luluvdo.com"))
         self.assertTrue(is_luluvid_host("luluvd.com"))
 
@@ -83,6 +85,18 @@ class TestVideoHosts(unittest.TestCase):
         unpacked = unpack_dean_edwards(sample)
         self.assertIn("video.m3u8", unpacked)
         self.assertIn("SampleTitle", unpacked)
+
+    def test_dean_edwards_unpacker_double_quotes(self):
+        sample_double = 'eval(function(p,a,c,k,e,d){return p}("0 1=\\"2.3\\";",4,4,"var|file|video|m3u8".split("|")))'
+        unpacked = unpack_dean_edwards(sample_double)
+        self.assertIn("video.m3u8", unpacked)
+
+    def test_sanitize_title(self):
+        from bot.extractors.video_hosts import sanitize_title
+        self.assertEqual(sanitize_title("My Awesome Video (2026)"), "My_Awesome_Video_2026.mp4")
+        self.assertEqual(sanitize_title("file.mkv"), "file.mkv")
+        self.assertEqual(sanitize_title("", default="fallback.mp4"), "fallback.mp4")
+        self.assertEqual(sanitize_title("Special !@#$%^&*()_+ Title"), "Special___Title.mp4")
 
     def test_streamtape_regex_token_extraction(self):
         # Mock HTML with robotlink assignment

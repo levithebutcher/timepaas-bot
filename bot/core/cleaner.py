@@ -22,17 +22,6 @@ def clean_temp_directories():
     logger.info("Startup temporary directory cleanup complete.")
 
 
-def check_free_disk_space(required_gb: float = MIN_FREE_DISK_GB) -> bool:
-    """Checks whether the system has sufficient free disk space."""
-    try:
-        usage = shutil.disk_usage(DOWNLOAD_DIR)
-        free_gb = usage.free / (1024 ** 3)
-        return free_gb >= required_gb
-    except Exception as e:
-        logger.error(f"Error checking disk space: {e}")
-        return True
-
-
 def get_free_disk_gb() -> float:
     """Returns the current free disk space in Gigabytes."""
     try:
@@ -40,6 +29,11 @@ def get_free_disk_gb() -> float:
         return usage.free / (1024 ** 3)
     except Exception:
         return 0.0
+
+
+def check_free_disk_space(required_gb: float = MIN_FREE_DISK_GB) -> bool:
+    """Checks whether the system has sufficient free disk space."""
+    return get_free_disk_gb() >= required_gb
 
 
 def remove_path(path: Path):

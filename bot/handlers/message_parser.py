@@ -197,7 +197,7 @@ async def album_command_handler(client: Client, message: Message):
     await process_submitted_urls(client, message, target_text, is_album=True)
 
 
-@Client.on_message(filters.text & filters.private & ~filters.command(["start", "help", "status", "cancelall", "setthumb", "clearthumb", "setcaption", "album"]))
+@Client.on_message(filters.text & filters.private & ~filters.regex(r"^/"))
 async def message_url_handler(client: Client, message: Message):
     user_id = message.from_user.id
     if not is_authorized(user_id):
@@ -206,6 +206,9 @@ async def message_url_handler(client: Client, message: Message):
 
     # Extract text from current message or replied message
     target_text = message.text or ""
+    if target_text.strip().startswith("/"):
+        return
+
     if message.reply_to_message and message.reply_to_message.text:
         target_text += "\n" + message.reply_to_message.text
 

@@ -13,6 +13,16 @@ from bot.core.cleaner import check_free_disk_space
 logger = logging.getLogger(__name__)
 
 
+def sanitize_filename(name: str, default: str = "downloaded_media.mp4") -> str:
+    """Sanitizes filename for cross-platform filesystem safety."""
+    if not name:
+        return default
+    clean = re.sub(r'[\x00-\x1f\x7f-\x9f\\/:*?"<>|]', '_', str(name)).strip('. ')
+    if not clean:
+        return default
+    return clean
+
+
 def derive_filename(url: str, response_headers: dict = None) -> str:
     """Extracts or derives a clean filename from headers or URL path."""
     if response_headers:
@@ -20,13 +30,13 @@ def derive_filename(url: str, response_headers: dict = None) -> str:
         if "filename=" in cd:
             filename = cd.split("filename=")[-1].strip('"\'; ')
             if filename:
-                return filename
+                return sanitize_filename(filename)
 
     parsed = urlparse(url)
     clean_path = unquote(parsed.path)
     base = Path(clean_path).name
     if base and "." in base:
-        return base
+        return sanitize_filename(base)
     return "downloaded_media.mp4"
 
 
@@ -343,6 +353,9 @@ async def download_m3u8_stream(
     """
     if not check_free_disk_space():
         raise RuntimeError("Insufficient disk space on host machine.")
+
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("FFmpeg is required to download HLS .m3u8 streams but was not found on PATH.")
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     m3u8_url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(m3u8_url).strip())

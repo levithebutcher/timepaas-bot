@@ -68,7 +68,10 @@ def extract_archive(archive_path: Path, task_id: str) -> dict:
 
         elif suffix in {".tar", ".gz", ".bz2", ".xz", ".tgz"}:
             with tarfile.open(archive_path, 'r:*') as tf:
-                tf.extractall(target_dir)
+                try:
+                    tf.extractall(target_dir, filter='data')
+                except TypeError:
+                    tf.extractall(target_dir)
             result["success"] = True
 
         else:

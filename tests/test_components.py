@@ -369,6 +369,72 @@ class TestComponents(unittest.TestCase):
         self.assertTrue(is_matching_host("pixeldrain.com", PIXELDRAIN_DOMAINS))
         self.assertFalse(is_matching_host("unknownrandomhost.xyz", FILEMOON_DOMAINS))
 
+    def test_sanitize_filename(self):
+        from bot.core.downloader import sanitize_filename
+        self.assertEqual(sanitize_filename("clean_file.mp4"), "clean_file.mp4")
+        self.assertEqual(sanitize_filename('invalid:*?"<>|file.mp4'), "invalid_______file.mp4")
+        self.assertEqual(sanitize_filename(""), "downloaded_media.mp4")
+
+    def test_resolve_clean_title(self):
+        from bot.core.queue_manager import resolve_clean_title
+        # Non-generic title
+        self.assertEqual(resolve_clean_title({"title": "MyVideo.mp4"}, "https://example.com/v/123"), "MyVideo.mp4")
+        # Generic title resolved via URL slug
+        generic = {"title": "master.mp4", "url": "https://example.com/stream/master.mp4"}
+        resolved = resolve_clean_title(generic, "https://site.com/watch/episode_05")
+        self.assertEqual(resolved, "episode_05.mp4")
+
+    def test_cancel_all_for_user_with_batches(self):
+        from bot.core.queue_manager import QueueManager, DownloadTask
+        qm = QueueManager()
+        # Task
+        t = DownloadTask(
+            id="t_cancel_test",
+            user_id=1234,
+            chat_id=5678,
+            url="https://site.com/v.mp4",
+            status_msg_id=1,
+            batch_id="b1"
+        )
+        qm.tasks[t.id] = t
+        # Batch
+        b = qm.register_batch("b_cancel_test", 5678, 1234, 5, is_album=True)
+        count = qm.cancel_all_for_user(1234)
+        self.assertEqual(count, 2)
+        self.assertTrue(t.cancel_event.is_set())
+        self.assertTrue(b.cancel_event.is_set())
+
+    def test_split_into_album_chunks_empty(self):
+        from bot.core.sorter import split_into_album_chunks
+        self.assertEqual(split_into_album_chunks([]), [])
+
+    def test_split_binary_file(self):
+        import tempfile
+        from bot.core.splitter import split_binary_file
+        with tempfile.TemporaryDirectory() as td:
+            dummy_file = Path(td) / "large_archive.zip"
+            # Create a 50KB dummy file
+            dummy_file.write_bytes(b"A" * 50000)
+            # Split with 20KB chunk size
+            parts = split_binary_file(dummy_file, chunk_size=20000)
+            self.assertEqual(len(parts), 3)
+            self.assertEqual(parts[0].stat().st_size, 20000)
+            self.assertEqual(parts[1].stat().st_size, 20000)
+            self.assertEqual(parts[2].stat().st_size, 10000)
+            # Verify reconstructed data
+            recombined = b"".join(p.read_bytes() for p in parts)
+            self.assertEqual(recombined, b"A" * 50000)
+
+    def test_split_video_file_undersize_no_split(self):
+        import tempfile
+        from bot.core.splitter import split_video_file
+        with tempfile.TemporaryDirectory() as td:
+            dummy_file = Path(td) / "small_clip.mp4"
+            dummy_file.write_bytes(b"\x00" * 1024)
+            # target_part_size is larger than file
+            parts = asyncio.run(split_video_file(dummy_file, target_part_size=5000))
+            self.assertEqual(parts, [dummy_file])
+
 
 if __name__ == "__main__":
     unittest.main()
