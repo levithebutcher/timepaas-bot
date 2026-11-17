@@ -11,6 +11,7 @@ from bot.extractors.video_hosts import (
     unpack_dean_edwards,
     evaluate_streamtape_js,
     sanitize_streamtape_url,
+    _parse_luluvid_content,
     STREAMTAPE_DOMAINS,
     DOOD_DOMAINS,
     MIXDROP_DOMAINS,
@@ -157,6 +158,45 @@ class TestVideoHosts(unittest.TestCase):
         # Test fixing duplicate domain prefix
         dup = "https://streamtape.com/streamtape.com/get_video?id=789"
         self.assertEqual(sanitize_streamtape_url(dup), "https://streamtape.com/get_video?id=789")
+
+    def test_parse_luluvid_content(self):
+        # 1. Direct m3u8 in HTML
+        html_direct = """
+        <html><head><title>My Video - LuluStream</title></head>
+        <body><video src="https://cdn.example.com/hls/test.m3u8"></video></body></html>
+        """
+        url, stype, title = _parse_luluvid_content(html_direct)
+        self.assertEqual(url, "https://cdn.example.com/hls/test.m3u8")
+        self.assertEqual(stype, "m3u8")
+        self.assertEqual(title, "My_Video.mp4")
+
+        # 2. Playerjs file config
+        html_pjs = """
+        <script>
+        var player = new Playerjs({id:"player", file:"https://cdn.example.com/stream/master.m3u8"});
+        </script>
+        """
+        url, stype, title = _parse_luluvid_content(html_pjs)
+        self.assertEqual(url, "https://cdn.example.com/stream/master.m3u8")
+        self.assertEqual(stype, "m3u8")
+
+        # 3. JWPlayer / VideoJS sources array
+        html_sources = """
+        <script>
+        sources: [{"file": "https://cdn.example.com/playlist/720p.m3u8"}]
+        </script>
+        """
+        url, stype, title = _parse_luluvid_content(html_sources)
+        self.assertEqual(url, "https://cdn.example.com/playlist/720p.m3u8")
+        self.assertEqual(stype, "m3u8")
+
+        # 4. Direct mp4 fallback
+        html_mp4 = """
+        <html><body><a href="https://cdn.example.com/downloads/sample_movie.mp4">Download</a></body></html>
+        """
+        url, stype, title = _parse_luluvid_content(html_mp4)
+        self.assertEqual(url, "https://cdn.example.com/downloads/sample_movie.mp4")
+        self.assertEqual(stype, "direct")
 
 
 if __name__ == "__main__":

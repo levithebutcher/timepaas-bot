@@ -90,11 +90,23 @@ async def status_handler(client: Client, message: Message):
         return
 
     active_tasks = [t for t in queue_manager.tasks.values() if t.status not in ("Done", "Failed", "Cancelled")]
+
+    sys_info = ""
+    try:
+        import psutil
+        cpu = psutil.cpu_percent(interval=None)
+        mem = psutil.virtual_memory().percent
+        disk = psutil.disk_usage(".").percent
+        sys_info = f"\n\n⚙️ <b>Server:</b> CPU <code>{cpu}%</code> | RAM <code>{mem}%</code> | Disk <code>{disk}%</code>"
+    except Exception:
+        pass
+
     if not active_tasks:
         await message.reply_text(
             "<blockquote>"
             "📭 <b>NO ACTIVE TASKS</b>\n"
             "All queues are clear. Send links to start downloading!"
+            f"{sys_info}"
             "</blockquote>"
         )
         return
@@ -106,7 +118,8 @@ async def status_handler(client: Client, message: Message):
     text = (
         f"<blockquote>"
         f"📊 <b>ACTIVE QUEUE ({len(active_tasks)} Tasks)</b>\n\n"
-        + "\n\n".join(items) +
+        + "\n\n".join(items)
+        + f"{sys_info}"
         f"</blockquote>"
     )
     await message.reply_text(text)

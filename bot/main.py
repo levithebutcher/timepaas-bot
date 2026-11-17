@@ -2,6 +2,15 @@ import asyncio
 import logging
 import sys
 import argparse
+
+# High-speed event loop for Linux / macOS / Colab environments
+if sys.platform != "win32":
+    try:
+        import uvloop
+        uvloop.install()
+    except Exception:
+        pass
+
 from pyrogram import Client
 from bot.config import API_ID, API_HASH, BOT_TOKEN, STREAMTAPE_LOGIN, STREAMTAPE_KEY
 from bot.core.cleaner import clean_temp_directories

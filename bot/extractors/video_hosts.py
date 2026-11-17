@@ -554,8 +554,83 @@ async def resolve_streamwish(url: str) -> dict:
     return None
 
 
+def _parse_luluvid_content(html: str) -> tuple:
+    """Extracts (stream_url, stream_type, title) from LuluStream / LuluVideo HTML content."""
+    if not html:
+        return None, "direct", None
+
+    title = None
+    title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
+    if title_match:
+        raw_title = title_match.group(1).strip()
+        clean_title = re.sub(r"\s*-\s*Lulu(stream|video|vid|vdo)(\.mp4)?", "", raw_title, flags=re.IGNORECASE).strip()
+        if clean_title:
+            title = sanitize_title(clean_title, default="luluvideo.mp4")
+
+    clean_html = html.replace(r"\/", "/")
+
+    # 1. Direct m3u8 regex check in HTML
+    m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', clean_html)
+
+    # 2. Playerjs or standard JS file configs: file: "https://..." or src: "https://..."
+    if not m3u8_matches:
+        file_configs = re.findall(r'(?:file|src)\s*:\s*["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', clean_html)
+        if file_configs:
+            m3u8_matches.extend(file_configs)
+
+    # 3. Check sources: [{file: "..."}] in JWPlayer / VideoJS configuration
+    if not m3u8_matches:
+        source_matches = re.findall(r'sources\s*:\s*\[\s*\{\s*(?:file|src)\s*:\s*["\']([^"\']+)["\']', clean_html)
+        for sm in source_matches:
+            if ".m3u8" in sm or ".mp4" in sm:
+                m3u8_matches.append(sm)
+                break
+
+    # 4. Unpack Dean Edwards P.A.C.K.E.R. scripts
+    if not m3u8_matches:
+        unpacked = unpack_dean_edwards(html)
+        if unpacked:
+            clean_unpacked = unpacked.replace(r"\/", "/")
+            m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', clean_unpacked)
+            if not m3u8_matches:
+                source_unpacked = re.findall(r'["\'](https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*)["\']', clean_unpacked)
+                if source_unpacked:
+                    m3u8_matches = source_unpacked
+            if not m3u8_matches:
+                pjs_unpacked = re.findall(r'(?:file|src)\s*:\s*["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', clean_unpacked)
+                if pjs_unpacked:
+                    m3u8_matches = pjs_unpacked
+
+    # 5. Check direct mp4 matches if no m3u8 found
+    if not m3u8_matches:
+        mp4_matches = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', clean_html)
+        valid_mp4s = [m for m in mp4_matches if not any(x in m.lower() for x in ("thumb", "poster", "preview", "banner", "ad."))]
+        if valid_mp4s:
+            m3u8_matches = valid_mp4s
+
+    if m3u8_matches:
+        stream_url = m3u8_matches[0]
+        stream_type = "m3u8" if ".m3u8" in stream_url else "direct"
+        return stream_url, stream_type, title
+
+    return None, "direct", title
+
+
+async def _fetch_stealth_text(url: str, headers: dict) -> str:
+    """Uses curl_cffi with Chrome TLS impersonation to bypass Cloudflare anti-bot blocks."""
+    try:
+        from curl_cffi.requests import AsyncSession
+        async with AsyncSession(impersonate="chrome124", timeout=12) as session:
+            resp = await session.get(url, headers=headers)
+            if resp.status_code == 200 and resp.text:
+                return resp.text
+    except Exception as e:
+        logger.debug(f"curl_cffi fetch failed for {url}: {e}")
+    return ""
+
+
 async def resolve_luluvid(url: str) -> dict:
-    """Extracts direct m3u8 or mp4 stream from LuluStream / LuluVid / LuluVideo via static analysis & Playwright fallback."""
+    """Extracts direct m3u8 or mp4 stream from LuluStream / LuluVid / LuluVideo via static analysis, curl_cffi, & Playwright fallback."""
     parsed = urlparse(url)
     base_origin = f"{parsed.scheme}://{parsed.netloc}"
     headers = {
@@ -581,8 +656,9 @@ async def resolve_luluvid(url: str) -> dict:
 
     title = "luluvideo.mp4"
 
+    # 1. Fast asynchronous static fetch via aiohttp
     try:
-        timeout = aiohttp.ClientTimeout(total=20)
+        timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
             for target_url in candidate_urls:
                 try:
@@ -593,79 +669,47 @@ async def resolve_luluvid(url: str) -> dict:
                 except Exception:
                     continue
 
-                if not html:
-                    continue
-
-                # Title extraction
-                title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
-                if title_match:
-                    raw_title = title_match.group(1).strip()
-                    clean_title = re.sub(r"\s*-\s*Lulu(stream|video|vid|vdo)(\.mp4)?", "", raw_title, flags=re.IGNORECASE).strip()
-                    if clean_title:
-                        title = sanitize_title(clean_title, default="luluvideo.mp4")
-
-                # Unescape slashes if JSON/JS escaped (\/ -> /)
-                clean_html = html.replace(r"\/", "/")
-
-                # 1. Direct m3u8 regex check in HTML
-                m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', clean_html)
-
-                # 2. Playerjs or standard JS file configs: file: "https://..." or src: "https://..."
-                if not m3u8_matches:
-                    file_configs = re.findall(r'(?:file|src)\s*:\s*["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', clean_html)
-                    if file_configs:
-                        m3u8_matches.extend(file_configs)
-
-                # 3. Check sources: [{file: "..."}] in JWPlayer / VideoJS configuration
-                if not m3u8_matches:
-                    source_matches = re.findall(r'sources\s*:\s*\[\s*\{\s*(?:file|src)\s*:\s*["\']([^"\']+)["\']', clean_html)
-                    for sm in source_matches:
-                        if ".m3u8" in sm or ".mp4" in sm:
-                            m3u8_matches.append(sm)
-                            break
-
-                # 4. Unpack Dean Edwards P.A.C.K.E.R. scripts
-                if not m3u8_matches:
-                    unpacked = unpack_dean_edwards(html)
-                    if unpacked:
-                        clean_unpacked = unpacked.replace(r"\/", "/")
-                        m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', clean_unpacked)
-                        if not m3u8_matches:
-                            source_unpacked = re.findall(r'["\'](https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*)["\']', clean_unpacked)
-                            if source_unpacked:
-                                m3u8_matches = source_unpacked
-                        if not m3u8_matches:
-                            pjs_unpacked = re.findall(r'(?:file|src)\s*:\s*["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', clean_unpacked)
-                            if pjs_unpacked:
-                                m3u8_matches = pjs_unpacked
-
-                # 5. Check direct mp4 matches if no m3u8 found
-                if not m3u8_matches:
-                    mp4_matches = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', clean_html)
-                    valid_mp4s = [m for m in mp4_matches if not any(x in m.lower() for x in ("thumb", "poster", "preview", "banner", "ad."))]
-                    if valid_mp4s:
-                        m3u8_matches = valid_mp4s
-
-                if m3u8_matches:
-                    stream_url = m3u8_matches[0]
-                    stream_type = "m3u8" if ".m3u8" in stream_url else "direct"
+                stream_url, stream_type, page_title = _parse_luluvid_content(html)
+                if page_title:
+                    title = page_title
+                if stream_url:
                     stream_headers = {
                         "User-Agent": DEFAULT_USER_AGENT,
                         "Referer": "https://lulustream.com/",
                         "Origin": "https://lulustream.com"
                     }
-                    logger.info(f"LuluStream/LuluVideo stream resolved: {title} ({stream_url[:50]}...)")
+                    logger.info(f"LuluStream/LuluVideo stream resolved via aiohttp: {title}")
                     return {
                         "type": stream_type,
                         "url": stream_url,
                         "title": title,
                         "headers": stream_headers
                     }
-
     except Exception as e:
-        logger.debug(f"LuluStream static extraction failed for {url}: {e}")
+        logger.debug(f"LuluStream aiohttp extraction failed for {url}: {e}")
 
-    # 6. Playwright Fallback if static regex failed (handles Cloudflare/JS challenge or dynamic token injection)
+    # 2. Stealth TLS fetch via curl_cffi (bypasses Cloudflare anti-bot blocks without launching browser)
+    for target_url in candidate_urls:
+        html = await _fetch_stealth_text(target_url, headers)
+        if html:
+            stream_url, stream_type, page_title = _parse_luluvid_content(html)
+            if page_title:
+                title = page_title
+            if stream_url:
+                stream_headers = {
+                    "User-Agent": DEFAULT_USER_AGENT,
+                    "Referer": "https://lulustream.com/",
+                    "Origin": "https://lulustream.com"
+                }
+                logger.info(f"LuluStream/LuluVideo stream resolved via curl_cffi: {title}")
+                return {
+                    "type": stream_type,
+                    "url": stream_url,
+                    "title": title,
+                    "headers": stream_headers
+                }
+
+    # 3. Playwright Fallback if static regex failed (handles Cloudflare/JS challenge or dynamic token injection)
     try:
         from bot.extractors.browser_ext import extract_with_playwright
         pw_target = candidate_urls[0] if candidate_urls else url
