@@ -100,11 +100,13 @@ def natural_sort_urls(urls: list[str]) -> list[str]:
 
 def split_into_album_chunks(items: list, max_size: int = 10, min_size: int = 2) -> list[list]:
     """
-    Splits items into balanced album packs (between min_size and max_size).
-    Guarantees no orphan single items remain when total items >= 2.
-    Example:
-      11 items -> [6, 5] (instead of 10 + 1)
-      21 items -> [7, 7, 7] (instead of 10 + 10 + 1)
+    Splits items into greedy sequential album packs (up to max_size, default: 10).
+    Sequential order is strictly preserved with full 10-packs first:
+      22 items -> [10, 10, 2]
+      21 items -> [10, 9, 2]
+      20 items -> [10, 10]
+      12 items -> [10, 2]
+      11 items -> [9, 2]
     """
     if not items:
         return []
@@ -113,13 +115,17 @@ def split_into_album_chunks(items: list, max_size: int = 10, min_size: int = 2) 
     if n <= max_size:
         return [items]
 
-    num_chunks = math.ceil(n / max_size)
-    base_size = n // num_chunks
-    rem = n % num_chunks
     chunks = []
-    start = 0
-    for i in range(num_chunks):
-        sz = base_size + (1 if i < rem else 0)
-        chunks.append(items[start:start + sz])
-        start += sz
+    for i in range(0, n, max_size):
+        chunks.append(items[i:i + max_size])
+
+    # If the tail chunk has fewer than min_size items and we have preceding chunks,
+    # rebalance minimal items from second-to-last chunk to guarantee minimum Telegram media group size
+    if len(chunks) > 1 and len(chunks[-1]) < min_size:
+        needed = min_size - len(chunks[-1])
+        if len(chunks[-2]) - needed >= min_size:
+            moved = chunks[-2][-needed:]
+            chunks[-2] = chunks[-2][:-needed]
+            chunks[-1] = moved + chunks[-1]
+
     return chunks

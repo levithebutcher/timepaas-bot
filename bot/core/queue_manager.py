@@ -95,7 +95,19 @@ class QueueManager:
         self.batches: dict[str, BatchInfo] = {}
         self.decision_futures: dict[str, asyncio.Future] = {}
         self._user_task_counts: dict[int, int] = {}
+        self._active_chat_batches: dict[int, str] = {}
         self._workers: list[asyncio.Task] = []
+
+    async def _wait_for_active_chat_batch(self, chat_id: int, current_batch_id: str = None, cancel_event: asyncio.Event = None):
+        """Delays delivery of single tasks if an album batch is currently releasing in this chat to prevent interleaving."""
+        active_batch = self._active_chat_batches.get(chat_id)
+        if active_batch and active_batch != current_batch_id:
+            logger.info(f"Chat {chat_id} has active album batch {active_batch}. Delaying delivery to prevent interleaving.")
+            wait_start = time.time()
+            while self._active_chat_batches.get(chat_id) == active_batch:
+                if (cancel_event and cancel_event.is_set()) or (time.time() - wait_start > 300.0):
+                    break
+                await asyncio.sleep(2.0)
 
     def get_user_active_count(self, user_id: int) -> int:
         return self._user_task_counts.get(user_id, 0)
@@ -343,6 +355,7 @@ class QueueManager:
                             client, task, downloaded_file.name, img_count
                         )
 
+                    await self._wait_for_active_chat_batch(task.chat_id, task.batch_id, task.cancel_event)
                     task.status = "Uploading Media"
 
                     # 1. Send raw ZIP file if user chose 'zip' or 'both'
@@ -431,6 +444,7 @@ class QueueManager:
                 return
 
             # Step 5: Uploading
+            await self._wait_for_active_chat_batch(task.chat_id, task.batch_id, task.cancel_event)
             task.status = "Uploading"
             for part in parts_to_upload:
                 if task.cancel_event.is_set():
@@ -570,9 +584,10 @@ class QueueManager:
         # Option B: Check if high-speed Dump Channel relay is configured
         dump_channel = await get_dump_channel()
 
-        # Track user task load
+        # Track user task load and chat-level active batch reservation
         curr_load = self._user_task_counts.get(batch.user_id, 0)
         self._user_task_counts[batch.user_id] = curr_load + total_files
+        self._active_chat_batches[batch.chat_id] = batch.batch_id
 
         completed_files = 0
         uploaded_albums = 0
@@ -724,8 +739,20 @@ class QueueManager:
                                     dl_file.unlink(missing_ok=True)
                                 album_parts = split_parts
 
-                            for sub_part in album_parts:
-                                part_caption = user_settings.get("custom_caption") or f"🎬 `{sub_part.name}`"
+                            chunk_start = sum(len(c) for c in chunks[:chunk_idx])
+                            global_idx = chunk_start + item_idx + 1
+
+                            for part_idx, sub_part in enumerate(album_parts, 1):
+                                if len(album_parts) > 1:
+                                    badge = f"[{global_idx:02d}/{total_files:02d} Part {part_idx}/{len(album_parts)}]"
+                                else:
+                                    badge = f"[{global_idx:02d}/{total_files:02d}]"
+
+                                custom_cap = user_settings.get("custom_caption")
+                                if custom_cap:
+                                    part_caption = f"🎬 `{badge}` {custom_cap}"
+                                else:
+                                    part_caption = f"🎬 `{badge}` `{sub_part.name}`"
 
                                 # Option B (Dump Relay Mode): Upload immediately and clear local disk
                                 if dump_channel:
@@ -854,6 +881,10 @@ class QueueManager:
                     prev_chunk_dir = None
 
         finally:
+            # Release chat-level active batch reservation
+            if self._active_chat_batches.get(batch.chat_id) == batch.batch_id:
+                self._active_chat_batches.pop(batch.chat_id, None)
+
             # Decrement user task load
             curr_load = self._user_task_counts.get(batch.user_id, 0)
             self._user_task_counts[batch.user_id] = max(0, curr_load - total_files)

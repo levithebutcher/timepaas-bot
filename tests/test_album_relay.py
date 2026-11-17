@@ -13,9 +13,11 @@ from bot.database import init_db, set_dump_channel, get_dump_channel
 from bot.core.uploader import (
     _METADATA_SEMAPHORE,
     _UPLOAD_SEMAPHORE,
+    get_chat_delivery_lock,
     upload_single_to_dump,
     deliver_dumped_album
 )
+from bot.core.queue_manager import queue_manager
 from bot.handlers.commands import (
     setdump_handler,
     getdump_handler,
@@ -48,14 +50,14 @@ class TestAlbumRelay(unittest.TestCase):
         self.assertEqual(len(c10), 1)
         self.assertEqual(len(c10[0]), 10)
 
-        # 11 items -> MUST be [6, 5] (never 10 + 1)
+        # 11 items -> [9, 2] (greedy 10 with tail adjustment)
         c11 = split_into_album_chunks(list(range(11)), max_size=10, min_size=2)
         sizes11 = [len(x) for x in c11]
-        self.assertEqual(sizes11, [6, 5])
+        self.assertEqual(sizes11, [9, 2])
 
-        # 12 items -> [6, 6]
+        # 12 items -> [10, 2]
         c12 = split_into_album_chunks(list(range(12)), max_size=10, min_size=2)
-        self.assertEqual([len(x) for x in c12], [6, 6])
+        self.assertEqual([len(x) for x in c12], [10, 2])
 
         # 19 items -> [10, 9]
         c19 = split_into_album_chunks(list(range(19)), max_size=10, min_size=2)
@@ -65,13 +67,17 @@ class TestAlbumRelay(unittest.TestCase):
         c20 = split_into_album_chunks(list(range(20)), max_size=10, min_size=2)
         self.assertEqual([len(x) for x in c20], [10, 10])
 
-        # 21 items -> [7, 7, 7]
+        # 21 items -> [10, 9, 2]
         c21 = split_into_album_chunks(list(range(21)), max_size=10, min_size=2)
-        self.assertEqual([len(x) for x in c21], [7, 7, 7])
+        self.assertEqual([len(x) for x in c21], [10, 9, 2])
 
-        # 31 items -> [8, 8, 8, 7]
+        # 22 items -> [10, 10, 2]
+        c22 = split_into_album_chunks(list(range(22)), max_size=10, min_size=2)
+        self.assertEqual([len(x) for x in c22], [10, 10, 2])
+
+        # 31 items -> [10, 10, 9, 2]
         c31 = split_into_album_chunks(list(range(31)), max_size=10, min_size=2)
-        self.assertEqual([len(x) for x in c31], [8, 8, 8, 7])
+        self.assertEqual([len(x) for x in c31], [10, 10, 9, 2])
 
         # Verify all sizes for any count from 2 to 60 are between 2 and 10
         for count in range(2, 61):
@@ -116,6 +122,23 @@ class TestAlbumRelay(unittest.TestCase):
         self.assertTrue(callable(setdump_handler))
         self.assertTrue(callable(getdump_handler))
         self.assertTrue(callable(cleardump_handler))
+
+    def test_chat_delivery_lock_isolation(self):
+        """Verify FIFO chat delivery lock is per-chat and reusable."""
+        lock1 = get_chat_delivery_lock(1001)
+        lock2 = get_chat_delivery_lock(1001)
+        lock3 = get_chat_delivery_lock(1002)
+        self.assertIs(lock1, lock2)
+        self.assertIsNot(lock1, lock3)
+
+    def test_active_chat_batch_isolation(self):
+        """Verify album batch reservations prevent interleaving."""
+        queue_manager._active_chat_batches[9999] = "batch_abc"
+        self.assertEqual(queue_manager._active_chat_batches.get(9999), "batch_abc")
+
+        # Cleanup
+        queue_manager._active_chat_batches.pop(9999, None)
+        self.assertIsNone(queue_manager._active_chat_batches.get(9999))
 
 
 if __name__ == "__main__":

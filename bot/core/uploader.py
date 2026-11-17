@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 _UPLOAD_SEMAPHORE = asyncio.Semaphore(4)
 # Concurrency semaphore to prevent multiple ffmpeg/ffprobe tasks from pinning CPU at 100%
 _METADATA_SEMAPHORE = asyncio.Semaphore(4)
+# Per-chat delivery lock to guarantee sequential message delivery and prevent interleaving
+_CHAT_DELIVERY_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def get_chat_delivery_lock(chat_id: int) -> asyncio.Lock:
+    """Returns a FIFO lock per Telegram chat to serialize uploads and prevent race conditions."""
+    if chat_id not in _CHAT_DELIVERY_LOCKS:
+        _CHAT_DELIVERY_LOCKS[chat_id] = asyncio.Lock()
+    return _CHAT_DELIVERY_LOCKS[chat_id]
 
 
 async def get_video_metadata(file_path: Path) -> tuple[int, int, int, bool]:
@@ -221,8 +230,9 @@ async def upload_file(
     if not file_path.exists() or file_path.stat().st_size == 0:
         raise FileNotFoundError(f"File to upload does not exist or is empty: {file_path}")
 
-    async with _UPLOAD_SEMAPHORE:
-        generated_thumb = None
+    async with get_chat_delivery_lock(chat_id):
+        async with _UPLOAD_SEMAPHORE:
+            generated_thumb = None
 
         try:
             if not as_document and file_path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
@@ -310,25 +320,26 @@ async def upload_video_albums(
         # Parallelize video probing and thumbnail generation across all pack videos (capped by _METADATA_SEMAPHORE)
         media_group = list(await asyncio.gather(*(prepare_media_item(vp, cap) for vp, cap in chunk)))
 
-        async with _UPLOAD_SEMAPHORE:
-            timeout_sec = max(300.0, len(chunk) * 60.0)
-            try:
-                # Dynamic timeout based on batch size to prevent premature socket aborts
-                await asyncio.wait_for(
-                    client.send_media_group(chat_id=chat_id, media=media_group),
-                    timeout=timeout_sec
-                )
-                await asyncio.sleep(2.0)
-            except Exception as e:
-                logger.warning(f"send_media_group failed or timed out ({e}), falling back to individual uploads")
-                for v_path, caption in chunk:
-                    try:
-                        await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
-                    except Exception as ex:
-                        logger.error(f"Fallback single upload failed for {v_path.name}: {ex}")
-            finally:
-                for t in temp_thumbs:
-                    remove_path(t)
+        async with get_chat_delivery_lock(chat_id):
+            async with _UPLOAD_SEMAPHORE:
+                timeout_sec = max(300.0, len(chunk) * 60.0)
+                try:
+                    # Dynamic timeout based on batch size to prevent premature socket aborts
+                    await asyncio.wait_for(
+                        client.send_media_group(chat_id=chat_id, media=media_group),
+                        timeout=timeout_sec
+                    )
+                    await asyncio.sleep(2.0)
+                except Exception as e:
+                    logger.warning(f"send_media_group failed or timed out ({e}), falling back to individual uploads")
+                    for v_path, caption in chunk:
+                        try:
+                            await upload_file(client, chat_id, v_path, caption=caption, custom_thumb=custom_thumb)
+                        except Exception as ex:
+                            logger.error(f"Fallback single upload failed for {v_path.name}: {ex}")
+                finally:
+                    for t in temp_thumbs:
+                        remove_path(t)
 
 
 async def upload_single_to_dump(
@@ -398,70 +409,72 @@ async def deliver_dumped_album(
 
     dump_msg_ids = [item["msg_id"] for item in dumped_items if "msg_id" in item]
 
-    try:
-        if len(dumped_items) == 1:
-            item = dumped_items[0]
-            try:
-                await client.copy_messages(
-                    chat_id=target_chat_id,
-                    from_chat_id=dump_chat_id,
-                    message_ids=item["msg_id"]
-                )
-            except Exception:
-                await client.send_video(
-                    chat_id=target_chat_id,
-                    video=item["file_id"],
+    async with get_chat_delivery_lock(target_chat_id):
+        try:
+            if len(dumped_items) == 1:
+                item = dumped_items[0]
+                try:
+                    await client.copy_messages(
+                        chat_id=target_chat_id,
+                        from_chat_id=dump_chat_id,
+                        message_ids=item["msg_id"]
+                    )
+                except Exception:
+                    await client.send_video(
+                        chat_id=target_chat_id,
+                        video=item["file_id"],
+                        caption=item["caption"],
+                        duration=item["duration"],
+                        width=item["width"],
+                        height=item["height"],
+                        supports_streaming=True
+                    )
+                return
+
+            # Group into media group using Telegram file_ids
+            media_group = [
+                InputMediaVideo(
+                    media=item["file_id"],
                     caption=item["caption"],
                     duration=item["duration"],
                     width=item["width"],
                     height=item["height"],
                     supports_streaming=True
                 )
-            return
+                for item in dumped_items
+            ]
 
-        # Group into media group using Telegram file_ids
-        media_group = [
-            InputMediaVideo(
-                media=item["file_id"],
-                caption=item["caption"],
-                duration=item["duration"],
-                width=item["width"],
-                height=item["height"],
-                supports_streaming=True
-            )
-            for item in dumped_items
-        ]
-
-        try:
-            await client.send_media_group(chat_id=target_chat_id, media=media_group)
-        except Exception as e:
-            logger.warning(f"send_media_group with file_ids failed ({e}); falling back to copy_messages")
-            await client.copy_messages(
-                chat_id=target_chat_id,
-                from_chat_id=dump_chat_id,
-                message_ids=dump_msg_ids
-            )
-    finally:
-        # Auto-delete temporary relayed videos from the Dump Channel so it stays 100% clean
-        if dump_msg_ids:
             try:
-                await client.delete_messages(chat_id=dump_chat_id, message_ids=dump_msg_ids)
-                logger.info(f"Auto-deleted {len(dump_msg_ids)} temporary messages from Dump Channel {dump_chat_id}")
-            except Exception as del_err:
-                logger.debug(f"Failed to auto-delete messages from dump channel: {del_err}")
+                await client.send_media_group(chat_id=target_chat_id, media=media_group)
+            except Exception as e:
+                logger.warning(f"send_media_group with file_ids failed ({e}); falling back to copy_messages")
+                await client.copy_messages(
+                    chat_id=target_chat_id,
+                    from_chat_id=dump_chat_id,
+                    message_ids=dump_msg_ids
+                )
+        finally:
+            # Auto-delete temporary relayed videos from the Dump Channel so it stays 100% clean
+            if dump_msg_ids:
+                try:
+                    await client.delete_messages(chat_id=dump_chat_id, message_ids=dump_msg_ids)
+                    logger.info(f"Auto-deleted {len(dump_msg_ids)} temporary messages from Dump Channel {dump_chat_id}")
+                except Exception as del_err:
+                    logger.debug(f"Failed to auto-delete messages from dump channel: {del_err}")
 
 
 async def upload_photo_albums(client, chat_id: int, image_paths: list[Path]):
     """Uploads a list of images in grouped media albums (max 10 per album)."""
     chunk_size = 10
-    for i in range(0, len(image_paths), chunk_size):
-        chunk = image_paths[i:i + chunk_size]
-        media_group = [InputMediaPhoto(media=str(p)) for p in chunk]
-        try:
-            await client.send_media_group(chat_id=chat_id, media=media_group)
-            await asyncio.sleep(1.5)  # Telegram rate limit buffer
-        except Exception as e:
-            logger.error(f"Failed to send image media group: {e}")
-            # Fallback to single document sends
-            for img in chunk:
-                await client.send_document(chat_id=chat_id, document=str(img))
+    async with get_chat_delivery_lock(chat_id):
+        for i in range(0, len(image_paths), chunk_size):
+            chunk = image_paths[i:i + chunk_size]
+            media_group = [InputMediaPhoto(media=str(p)) for p in chunk]
+            try:
+                await client.send_media_group(chat_id=chat_id, media=media_group)
+                await asyncio.sleep(1.5)  # Telegram rate limit buffer
+            except Exception as e:
+                logger.error(f"Failed to send image media group: {e}")
+                # Fallback to single document sends
+                for img in chunk:
+                    await client.send_document(chat_id=chat_id, document=str(img))
