@@ -7,7 +7,11 @@ import logging
 from pathlib import Path
 try:
     from pyrogram.types import InputMediaPhoto, InputMediaVideo
+    from pyrogram.errors import FloodWait
 except ImportError:
+    class FloodWait(Exception):
+        value = 0
+
     class InputMediaPhoto:
         def __init__(self, media=None, caption=None):
             self.media = media
@@ -40,6 +44,8 @@ logger = logging.getLogger(__name__)
 _UPLOAD_SEMAPHORE = asyncio.Semaphore(4)
 # Concurrency semaphore to prevent multiple ffmpeg/ffprobe tasks from pinning CPU at 100%
 _METADATA_SEMAPHORE = asyncio.Semaphore(4)
+# Serial lock for dump channel uploads to prevent simultaneous API hammer & 420 FLOOD_WAIT
+_DUMP_RELAY_LOCK = asyncio.Lock()
 # Per-chat delivery lock to guarantee sequential message delivery and prevent interleaving
 _CHAT_DELIVERY_LOCKS: dict[int, asyncio.Lock] = {}
 
@@ -333,10 +339,16 @@ async def upload_video_albums(
                 timeout_sec = max(300.0, len(chunk) * 60.0)
                 try:
                     # Dynamic timeout based on batch size to prevent premature socket aborts
-                    await asyncio.wait_for(
-                        client.send_media_group(chat_id=chat_id, media=media_group),
-                        timeout=timeout_sec
-                    )
+                    for attempt in range(3):
+                        try:
+                            await asyncio.wait_for(
+                                client.send_media_group(chat_id=chat_id, media=media_group),
+                                timeout=timeout_sec
+                            )
+                            break
+                        except FloodWait as fw:
+                            logger.warning(f"FloodWait in upload_video_albums: sleeping {fw.value + 1}s")
+                            await asyncio.sleep(fw.value + 1)
                     await asyncio.sleep(2.0)
                 except Exception as e:
                     logger.warning(f"send_media_group failed or timed out ({e}), falling back to individual uploads")
@@ -362,6 +374,7 @@ async def upload_single_to_dump(
     Uploads a single video directly to the designated Dump Channel / Group (Option B).
     Immediately deletes the local video file from disk upon successful upload to prevent
     disk space buildup. Returns media descriptors including Telegram server-side file_id.
+    Handles Telegram FloodWait with automatic sleep & retry.
     """
     if not file_path.exists() or file_path.stat().st_size == 0:
         raise FileNotFoundError(f"File to upload does not exist or is empty: {file_path}")
@@ -370,24 +383,46 @@ async def upload_single_to_dump(
         file_path, custom_thumb
     )
 
-    async with _UPLOAD_SEMAPHORE:
-        try:
-            sent = await client.send_video(
-                chat_id=dump_chat_id,
-                video=str(file_path),
-                caption=caption,
-                duration=duration,
-                width=width,
-                height=height,
-                thumb=actual_thumb,
-                supports_streaming=True,
-                progress=progress_callback
-            )
-        finally:
-            if generated_thumb and generated_thumb.exists():
-                remove_path(generated_thumb)
-            # Immediately delete local video file to free disk!
-            remove_path(file_path)
+    sent = None
+    max_retries = 3
+
+    # Serialize dump channel uploads to prevent multiple simultaneous sends hitting Telegram flood limits
+    async with _DUMP_RELAY_LOCK:
+        async with _UPLOAD_SEMAPHORE:
+            try:
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        sent = await client.send_video(
+                            chat_id=dump_chat_id,
+                            video=str(file_path),
+                            caption=caption,
+                            duration=duration,
+                            width=width,
+                            height=height,
+                            thumb=actual_thumb,
+                            supports_streaming=True,
+                            progress=progress_callback
+                        )
+                        break
+                    except FloodWait as fw:
+                        logger.warning(
+                            f"Telegram FloodWait in dump relay: sleeping {fw.value + 1}s (attempt {attempt}/{max_retries})"
+                        )
+                        await asyncio.sleep(fw.value + 1)
+                    except Exception as e:
+                        if attempt == max_retries:
+                            raise e
+                        logger.warning(f"send_video error in dump relay ({e}), retrying in 2s...")
+                        await asyncio.sleep(2)
+            finally:
+                if generated_thumb and generated_thumb.exists():
+                    remove_path(generated_thumb)
+                # CRITICAL: Only delete local video file once upload actually succeeded!
+                if sent is not None:
+                    remove_path(file_path)
+
+    if not sent:
+        raise RuntimeError(f"Failed to upload {file_path.name} to dump channel after {max_retries} attempts.")
 
     file_id = sent.video.file_id if sent.video else (sent.document.file_id if sent.document else None)
     thumb_id = sent.video.thumbs[0].file_id if (sent.video and sent.video.thumbs) else None
@@ -423,23 +458,32 @@ async def deliver_dumped_album(
         try:
             if len(dumped_items) == 1:
                 item = dumped_items[0]
-                try:
-                    await client.copy_messages(
-                        chat_id=target_chat_id,
-                        from_chat_id=dump_chat_id,
-                        message_ids=item["msg_id"]
-                    )
-                except Exception:
-                    await client.send_video(
-                        chat_id=target_chat_id,
-                        video=item["file_id"],
-                        caption=item["caption"],
-                        duration=item["duration"],
-                        width=item["width"],
-                        height=item["height"],
-                        supports_streaming=True
-                    )
-                return
+                for attempt in range(3):
+                    try:
+                        await client.copy_messages(
+                            chat_id=target_chat_id,
+                            from_chat_id=dump_chat_id,
+                            message_ids=item["msg_id"]
+                        )
+                        return
+                    except FloodWait as fw:
+                        logger.warning(f"FloodWait in copy_messages: sleeping {fw.value + 1}s")
+                        await asyncio.sleep(fw.value + 1)
+                    except Exception:
+                        try:
+                            await client.send_video(
+                                chat_id=target_chat_id,
+                                video=item["file_id"],
+                                caption=item["caption"],
+                                duration=item["duration"],
+                                width=item["width"],
+                                height=item["height"],
+                                supports_streaming=True
+                            )
+                            return
+                        except FloodWait as fw2:
+                            logger.warning(f"FloodWait in send_video fallback: sleeping {fw2.value + 1}s")
+                            await asyncio.sleep(fw2.value + 1)
 
             # Group into media group using Telegram file_ids
             media_group = [
@@ -454,15 +498,28 @@ async def deliver_dumped_album(
                 for item in dumped_items
             ]
 
-            try:
-                await client.send_media_group(chat_id=target_chat_id, media=media_group)
-            except Exception as e:
-                logger.warning(f"send_media_group with file_ids failed ({e}); falling back to copy_messages")
-                await client.copy_messages(
-                    chat_id=target_chat_id,
-                    from_chat_id=dump_chat_id,
-                    message_ids=dump_msg_ids
-                )
+            for attempt in range(3):
+                try:
+                    await client.send_media_group(chat_id=target_chat_id, media=media_group)
+                    break
+                except FloodWait as fw:
+                    logger.warning(f"FloodWait in deliver_dumped_album send_media_group: sleeping {fw.value + 1}s")
+                    await asyncio.sleep(fw.value + 1)
+                except Exception as e:
+                    logger.warning(f"send_media_group with file_ids failed ({e}); falling back to copy_messages")
+                    try:
+                        await client.copy_messages(
+                            chat_id=target_chat_id,
+                            from_chat_id=dump_chat_id,
+                            message_ids=dump_msg_ids
+                        )
+                        break
+                    except FloodWait as fw2:
+                        logger.warning(f"FloodWait in copy_messages fallback: sleeping {fw2.value + 1}s")
+                        await asyncio.sleep(fw2.value + 1)
+                    except Exception as copy_err:
+                        logger.error(f"copy_messages failed: {copy_err}")
+                        break
         finally:
             # Auto-delete temporary relayed videos from the Dump Channel so it stays 100% clean
             if dump_msg_ids:

@@ -454,7 +454,8 @@ async def _download_m3u8_via_curl_cffi(
             local_m3u8 = tmp_dir / "local.m3u8"
             local_m3u8.write_text("\n".join(local_lines), encoding="utf-8")
 
-            sem = asyncio.Semaphore(4)
+            # Accelerated parallel chunk downloader (16 concurrent streams)
+            sem = asyncio.Semaphore(16)
             downloaded_bytes = 0
 
             async def dl_segment(idx, seg_u, dest):
@@ -583,11 +584,15 @@ async def download_m3u8_stream(
         "-allowed_extensions", "ALL",
         "-http_persistent", "1",
         "-http_multiple", "1",
-        "-headers", header_str,
+        "-timeout", "15000000",
+        "-tcp_nodelay", "1",
+        "-tcp_keepalive", "1",
         "-reconnect", "1",
         "-reconnect_at_eof", "1",
         "-reconnect_streamed", "1",
+        "-reconnect_on_network_error", "1",
         "-reconnect_delay_max", "5",
+        "-headers", header_str,
         "-i", m3u8_url,
         "-c", "copy",
         "-movflags", "+faststart",

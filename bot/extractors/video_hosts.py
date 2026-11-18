@@ -37,7 +37,8 @@ DOOD_DOMAINS = {
 MIXDROP_DOMAINS = {
     "mixdrop.co", "mixdrop.to", "mixdrop.sx", "mixdrop.bz",
     "mixdrop.ch", "mixdrop.ag", "mixdrop.vc", "mixdrop.club",
-    "mixdrop.pe", "mixdrop.is", "mxdrop.click", "mxdrop.to"
+    "mixdrop.pe", "mixdrop.is", "mxdrop.click", "mxdrop.to",
+    "mdzsmutpcvykb.net", "mxcontent.net"
 }
 
 ARCHIVEBATE_DOMAINS = {
@@ -119,6 +120,15 @@ LIVECAMRIPS_DOMAINS = {
     "livecamrips.to", "livecamrips.com", "livecamrips.net", "livecamrips.org"
 }
 
+UQLOAD_DOMAINS = {
+    "uqload.vc", "uqload.to", "uqload.com", "uqload.io", "uqload.co",
+    "uqload.net", "uqload.ws", "uqload.cx", "uqload.org"
+}
+
+ABSTREAM_DOMAINS = {
+    "abstream.to", "abstream.net", "abstream.org", "streambucket.xyz"
+}
+
 
 def is_streamcash_host(netloc: str) -> bool:
     netloc = netloc.lower().split(":")[0]
@@ -128,6 +138,16 @@ def is_streamcash_host(netloc: str) -> bool:
 def is_livecamrips_host(netloc: str) -> bool:
     netloc = netloc.lower().split(":")[0]
     return is_matching_host(netloc, LIVECAMRIPS_DOMAINS) or "livecamrips" in netloc
+
+
+def is_uqload_host(netloc: str) -> bool:
+    netloc = netloc.lower().split(":")[0]
+    return is_matching_host(netloc, UQLOAD_DOMAINS) or "uqload" in netloc
+
+
+def is_abstream_host(netloc: str) -> bool:
+    netloc = netloc.lower().split(":")[0]
+    return is_matching_host(netloc, ABSTREAM_DOMAINS) or "abstream" in netloc
 
 
 def unpack_dean_edwards(payload: str) -> str:
@@ -1429,6 +1449,131 @@ async def resolve_streamcash(url: str, custom_title: str = None) -> dict:
     return None
 
 
+async def resolve_uqload(url: str, custom_title: str = None) -> dict:
+    """
+    Tier-0 Fast Resolver for Uqload video embeds.
+    Extracts high-speed m3u8 stream from Dean Edwards packed JavaScript in < 0.2s.
+    """
+    clean_url = url.replace("/d/", "/embed-").replace("/v/", "/embed-")
+    parsed = urlparse(clean_url)
+    base_origin = f"{parsed.scheme}://{parsed.netloc}"
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": "https://livecamrips.to/"
+    }
+
+    html = await _fetch_stealth_text(clean_url, headers)
+    if not html:
+        try:
+            async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get(clean_url, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+        except Exception:
+            pass
+
+    if not html:
+        return None
+
+    title = custom_title
+    if not title:
+        t_match = re.search(r"<title>(.*?)</title>", html, re.I)
+        if t_match:
+            raw_t = t_match.group(1).replace("Watch", "").replace("Uqload", "").strip(" -|")
+            title = sanitize_title(raw_t, default="uqload_video.mp4")
+        else:
+            title = "uqload_video.mp4"
+
+    unpacked = unpack_dean_edwards(html) or html
+
+    m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', unpacked)
+    if not m3u8_matches:
+        file_m = re.findall(r'(?:file|sources\s*:\s*\[\s*\{\s*file)\s*:\s*["\']([^"\']+\.m3u8[^\s"\']*)["\']', unpacked)
+        if file_m:
+            m3u8_matches = file_m
+
+    if m3u8_matches:
+        stream_url = m3u8_matches[0]
+        logger.info(f"Uqload m3u8 stream resolved: {title}")
+        return {
+            "type": "m3u8",
+            "url": stream_url,
+            "title": title,
+            "headers": {
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Referer": f"{base_origin}/",
+                "Origin": base_origin
+            }
+        }
+
+    mp4_matches = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', unpacked)
+    if mp4_matches:
+        stream_url = mp4_matches[0]
+        return {
+            "type": "direct",
+            "url": stream_url,
+            "title": title,
+            "headers": {
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Referer": f"{base_origin}/"
+            }
+        }
+
+    return None
+
+
+async def resolve_abstream(url: str, custom_title: str = None) -> dict:
+    """
+    Tier-0 Fast Resolver for Abstream video embeds.
+    Extracts high-speed m3u8 stream from page sources in < 0.2s.
+    """
+    clean_url = url
+    parsed = urlparse(clean_url)
+    base_origin = f"{parsed.scheme}://{parsed.netloc}"
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": "https://livecamrips.to/"
+    }
+
+    html = await _fetch_stealth_text(clean_url, headers)
+    if not html:
+        try:
+            async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get(clean_url, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+        except Exception:
+            pass
+
+    if not html:
+        return None
+
+    title = custom_title or "abstream_video.mp4"
+    unpacked = unpack_dean_edwards(html) or html
+
+    m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', unpacked)
+    if not m3u8_matches:
+        file_m = re.findall(r'(?:file|sources\s*:\s*\[\s*\{\s*file)\s*:\s*["\']([^"\']+\.m3u8[^\s"\']*)["\']', unpacked)
+        if file_m:
+            m3u8_matches = file_m
+
+    if m3u8_matches:
+        stream_url = m3u8_matches[0]
+        logger.info(f"Abstream m3u8 stream resolved: {title}")
+        return {
+            "type": "m3u8",
+            "url": stream_url,
+            "title": title,
+            "headers": {
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Referer": f"{base_origin}/",
+                "Origin": base_origin
+            }
+        }
+
+    return None
+
+
 async def resolve_livecamrips(url: str) -> dict:
     """
     Tier-0 Fast Resolver for Livecamrips.to.
@@ -1467,16 +1612,80 @@ async def resolve_livecamrips(url: str) -> dict:
             iframe_url = "https:" + iframe_url
         logger.info(f"Livecamrips found embedded player iframe: {iframe_url}")
 
-        if "streamcash" in iframe_url:
+        parsed_ifr = urlparse(iframe_url)
+        ifr_netloc = parsed_ifr.netloc.lower().split(":")[0]
+
+        # 1. Specialized host resolvers
+        if is_streamcash_host(ifr_netloc):
             res = await resolve_streamcash(iframe_url, custom_title=title)
             if res:
                 return res
 
+        if is_uqload_host(ifr_netloc):
+            res = await resolve_uqload(iframe_url, custom_title=title)
+            if res:
+                return res
+
+        if is_abstream_host(ifr_netloc):
+            res = await resolve_abstream(iframe_url, custom_title=title)
+            if res:
+                return res
+
+        if is_matching_host(ifr_netloc, MIXDROP_DOMAINS) or "mixdrop" in ifr_netloc or "mdzsmutpcvykb" in ifr_netloc or "mxcontent" in ifr_netloc:
+            res = await resolve_mixdrop(iframe_url)
+            if res:
+                res["title"] = title
+                return res
+
+        # 2. General video host extraction
         other_host_res = await extract_from_video_hosts(iframe_url)
         if other_host_res:
             if title and not title.startswith("streamcash_video"):
                 other_host_res["title"] = title
             return other_host_res
+
+        # 3. Dynamic generic inline iframe probe: fetch iframe HTML, unpack JS, check media
+        try:
+            ifr_headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": "https://livecamrips.to/"}
+            ifr_html = await _fetch_stealth_text(iframe_url, ifr_headers)
+            if ifr_html:
+                unpacked = unpack_dean_edwards(ifr_html) or ifr_html
+                # Check MDCore.wurl
+                md_match = re.search(r'(?:MDCore\.wurl|MDCore\.vurl|wurl|vurl)\s*=\s*["\']([^"\']+)["\']', unpacked)
+                if md_match:
+                    st_url = md_match.group(1)
+                    if st_url.startswith("//"):
+                        st_url = "https:" + st_url
+                    return {
+                        "type": "direct",
+                        "url": st_url,
+                        "title": title,
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": iframe_url}
+                    }
+                # Check m3u8
+                m3u8_m = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', unpacked)
+                if m3u8_m:
+                    return {
+                        "type": "m3u8",
+                        "url": m3u8_m[0],
+                        "title": title,
+                        "headers": {
+                            "User-Agent": DEFAULT_USER_AGENT,
+                            "Referer": f"{parsed_ifr.scheme}://{parsed_ifr.netloc}/",
+                            "Origin": f"{parsed_ifr.scheme}://{parsed_ifr.netloc}"
+                        }
+                    }
+                # Check mp4
+                mp4_m = re.findall(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', unpacked)
+                if mp4_m:
+                    return {
+                        "type": "direct",
+                        "url": mp4_m[0],
+                        "title": title,
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": iframe_url}
+                    }
+        except Exception as ifr_err:
+            logger.debug(f"Generic iframe probe failed: {ifr_err}")
 
     # Fallback to Playwright
     try:
@@ -1571,5 +1780,13 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_streamcash_host(netloc):
         logger.info(f"Target recognized as Streamcash: {url}")
         return await resolve_streamcash(url)
+
+    if is_uqload_host(netloc):
+        logger.info(f"Target recognized as Uqload: {url}")
+        return await resolve_uqload(url)
+
+    if is_abstream_host(netloc):
+        logger.info(f"Target recognized as Abstream: {url}")
+        return await resolve_abstream(url)
 
     return None
