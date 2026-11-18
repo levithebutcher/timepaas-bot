@@ -6,10 +6,36 @@ from bot.config import DEFAULT_USER_AGENT
 
 logger = logging.getLogger(__name__)
 
+AD_TRACKER_PATTERNS = (
+    "googlesyndication.com", "doubleclick.net", "googleadservices.com",
+    "google-analytics.com", "adservice.google", "pagead2.googlesyndication",
+    "adnxs.com", "exoclick.com", "popcash.net", "popads.net",
+    "propellerads.com", "juicyads.com", "trafficjunky.net", "trafficstars.com",
+    "yandex.ru", "yandex.net", "clarity.ms", "scorecardresearch.com",
+    "histats.com", "hotjar.com", "onesignal.com", "adsco.re",
+    "/ads/", "/ad/", "/advert/", "/banner/", "adsterra.com", "monetag.com"
+)
+
+NON_MEDIA_EXTENSIONS = (
+    ".js", ".mjs", ".ts", ".css", ".json", ".html", ".htm",
+    ".txt", ".svg", ".xml", ".ico", ".woff", ".woff2", ".ttf",
+    ".map", ".php", ".jsp", ".asp", ".aspx"
+)
+
+NON_MEDIA_MIMES = (
+    "text/", "javascript", "application/javascript", "application/x-javascript",
+    "application/json", "application/xml", "image/svg", "image/gif", "image/png",
+    "image/jpeg", "image/webp", "image/x-icon", "font/"
+)
+
+VALID_MEDIA_EXTENSIONS = (
+    ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv",
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".ts"
+)
+
 MEDIA_KEYWORDS = [
     ".m3u8", ".mp4", ".webm", ".mkv", ".zip", ".rar",
-    "/get_video", "tapecontent.net", "pass_md5", "delivery",
-    "/download", "/dl/", "attachment"
+    "/get_video", "tapecontent.net", "pass_md5", "delivery"
 ]
 
 
@@ -43,12 +69,35 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
             )
             page = await context.new_page()
 
+            # Route blocker for aggressive ad networks and heavy fonts
+            async def intercept_route(route):
+                req_u = route.request.url.lower()
+                r_type = route.request.resource_type
+                if r_type in ("font",) or any(ad in req_u for ad in AD_TRACKER_PATTERNS):
+                    try:
+                        await route.abort()
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await route.continue_()
+                    except Exception:
+                        pass
+
+            try:
+                await page.route("**/*", intercept_route)
+            except Exception:
+                pass
+
             # 1. Native browser download trigger listener
             async def handle_download(download):
                 nonlocal intercepted_url, intercepted_filename, stream_type, intercepted_headers
                 try:
-                    dl_url = download.url
                     fn = download.suggested_filename
+                    if fn and any(fn.lower().endswith(ext) for ext in NON_MEDIA_EXTENSIONS):
+                        logger.debug(f"Ignoring non-media download event: {fn}")
+                        return
+                    dl_url = download.url
                     if dl_url:
                         intercepted_url = dl_url
                         intercepted_filename = fn
@@ -65,33 +114,57 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
 
             # 2. Network traffic stream sniffer
             async def handle_response(response):
-                nonlocal intercepted_url, intercepted_headers, stream_type
+                nonlocal intercepted_url, intercepted_headers, stream_type, intercepted_filename
                 if intercepted_url:
                     return
 
                 resp_url = response.url
                 clean_url = resp_url.split("?")[0].lower()
+
+                # Immediately drop ad networks, trackers, and analytics
+                if any(ad in clean_url or ad in resp_url.lower() for ad in AD_TRACKER_PATTERNS):
+                    return
+
+                # Immediately drop non-media file extensions (scripts, styles, html, icons)
+                if any(clean_url.endswith(ext) for ext in NON_MEDIA_EXTENSIONS):
+                    return
+
                 content_type = response.headers.get("content-type", "").lower()
+                # Immediately drop non-media MIME types (javascript, text, html, images, fonts)
+                if any(m in content_type for m in NON_MEDIA_MIMES):
+                    return
+
                 content_disp = response.headers.get("content-disposition", "").lower()
 
-                for kw in MEDIA_KEYWORDS:
-                    if (
-                        kw in clean_url
-                        or "video/" in content_type
-                        or "application/x-mpegurl" in content_type
-                        or "attachment" in content_disp
-                        or "application/force-download" in content_type
-                    ):
-                        intercepted_url = resp_url
-                        intercepted_headers = {
-                            "User-Agent": DEFAULT_USER_AGENT,
-                            "Referer": url
-                        }
-                        if ".m3u8" in clean_url or "mpegurl" in content_type:
-                            stream_type = "m3u8"
-                        else:
-                            stream_type = "direct"
-                        break
+                # Check for m3u8 playlist
+                if ".m3u8" in clean_url or "mpegurl" in content_type:
+                    intercepted_url = resp_url
+                    stream_type = "m3u8"
+                    intercepted_headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url}
+                    logger.info(f"Playwright intercepted m3u8 stream: {resp_url[:60]}...")
+                    return
+
+                # Check for direct media stream
+                is_media = (
+                    any(clean_url.endswith(ext) for ext in VALID_MEDIA_EXTENSIONS)
+                    or content_type.startswith("video/")
+                    or any(k in clean_url for k in ("/get_video", "tapecontent.net", "pass_md5", "delivery"))
+                )
+
+                # Check for verified media attachment (never accept script or doc attachments)
+                if not is_media and ("attachment" in content_disp or "application/force-download" in content_type or "octet-stream" in content_type):
+                    fn_match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';\r\n]+)', content_disp)
+                    if fn_match:
+                        cand_fn = fn_match.group(1).lower().strip()
+                        if not any(cand_fn.endswith(ext) for ext in NON_MEDIA_EXTENSIONS) and any(cand_fn.endswith(ext) for ext in VALID_MEDIA_EXTENSIONS):
+                            is_media = True
+                            intercepted_filename = fn_match.group(1).strip()
+
+                if is_media:
+                    intercepted_url = resp_url
+                    stream_type = "direct"
+                    intercepted_headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": url}
+                    logger.info(f"Playwright intercepted media stream: {resp_url[:60]}...")
 
             page.on("response", handle_response)
 
@@ -104,9 +177,11 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
             try:
                 raw_t = await page.title()
                 if raw_t:
-                    page_title = re.sub(r"[^\w\s\.\-]", "", raw_t).strip()
-                    if not any(page_title.lower().endswith(ext) for ext in (".mp4", ".mkv", ".zip")):
-                        page_title += ".mp4"
+                    clean_t = re.sub(r"[^\w\s\.\-]", "", raw_t).strip()
+                    if clean_t.lower() not in ("loading...", "loading", "please wait", "just a moment..."):
+                        if not any(clean_t.lower().endswith(ext) for ext in (".mp4", ".mkv", ".zip")):
+                            clean_t += ".mp4"
+                        page_title = clean_t
             except Exception:
                 page_title = None
 
@@ -252,7 +327,13 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
             await browser.close()
 
             if intercepted_url:
-                final_title = intercepted_filename or page_title or intercepted_url.split("/")[-1].split("?")[0] or "browser_media.mp4"
+                final_title = intercepted_filename or page_title or "browser_media.mp4"
+                if not any(final_title.lower().endswith(ext) for ext in (".mp4", ".mkv", ".webm", ".zip", ".rar")):
+                    final_title = re.sub(r"\.[a-zA-Z0-9]+$", "", final_title) + ".mp4"
+                if any(k in final_title.lower() for k in ("loading", "please wait", "just a moment")):
+                    clean_segment = url.split("?")[0].rstrip("/").split("/")[-1]
+                    final_title = f"{clean_segment}.mp4" if clean_segment else "browser_media.mp4"
+
                 return {
                     "type": stream_type,
                     "url": intercepted_url,

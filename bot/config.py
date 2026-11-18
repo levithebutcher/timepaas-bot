@@ -81,6 +81,10 @@ MAX_SPLIT_SIZE_BYTES = int(1.95 * 1024 * 1024 * 1024)
 STREAMTAPE_LOGIN = os.getenv("STREAMTAPE_LOGIN", "").strip().strip('"\'')
 STREAMTAPE_KEY = os.getenv("STREAMTAPE_KEY", "").strip().strip('"\'')
 
+# Optional Video Host API Credentials (Lplaygo / Streamfiles)
+LPLAYGO_KEY = os.getenv("LPLAYGO_KEY", "3508922dv7twvtfbj0q2x").strip().strip('"\'')
+STREAMFILE_KEY = os.getenv("STREAMFILE_KEY", "409lf0av15iqtzjr14").strip().strip('"\'')
+
 # Headers for browser spoofing
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

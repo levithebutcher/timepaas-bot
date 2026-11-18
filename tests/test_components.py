@@ -543,6 +543,36 @@ class TestComponents(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertIn("TIMEPASS LEECH", parsed["message"])
 
+    def test_validate_downloaded_file(self):
+        import tempfile
+        from bot.core.downloader import _validate_downloaded_file
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # 1. Empty file
+            empty_file = Path(tmp_dir) / "empty.mp4"
+            empty_file.touch()
+            with self.assertRaises(RuntimeError):
+                _validate_downloaded_file(empty_file)
+
+            # 2. HTML page
+            html_file = Path(tmp_dir) / "webpage.mp4"
+            html_file.write_text("<!DOCTYPE html><html><head><title>Error</title></head><body>404</body></html>")
+            with self.assertRaises(RuntimeError):
+                _validate_downloaded_file(html_file)
+
+            # 3. Google ad script
+            ad_file = Path(tmp_dir) / "ad.mp4"
+            ad_file.write_text("(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});})(window,document,'script','dataLayer','GTM-123');")
+            with self.assertRaises(RuntimeError):
+                _validate_downloaded_file(ad_file)
+
+            # 4. Valid binary file
+            valid_file = Path(tmp_dir) / "valid.mp4"
+            valid_file.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42" + b"\x00" * 2048)
+            # Should not raise
+            _validate_downloaded_file(valid_file)
+            self.assertTrue(valid_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

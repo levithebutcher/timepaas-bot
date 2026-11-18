@@ -88,19 +88,43 @@ def sanitize_headers(headers: dict = None) -> dict:
 
 
 def _validate_downloaded_file(target_path: Path):
-    """Validates that a downloaded file is valid media and not an HTML error webpage."""
-    if target_path.exists() and target_path.stat().st_size < 500 * 1024:
+    """Validates that a downloaded file is valid media and not an HTML/JS/Ad error page or empty file."""
+    if not target_path.exists():
+        return
+    size = target_path.stat().st_size
+    if size == 0:
+        target_path.unlink(missing_ok=True)
+        raise RuntimeError("Downloaded file is empty (0 bytes).")
+
+    if size < 1024 * 1024:  # under 1 MB
+        prefix = b""
         try:
             with open(target_path, "rb") as check_f:
-                prefix = check_f.read(512).lower()
-                if b"<!doctype html" in prefix or b"<html" in prefix or b"<head" in prefix:
-                    target_path.unlink(missing_ok=True)
-                    raise RuntimeError(
-                        "Downloaded content was an HTML webpage instead of a media stream. "
-                        "The video link could not be downloaded."
-                    )
+                prefix = check_f.read(2048).lower()
         except (IOError, OSError):
-            pass
+            return
+
+        # Check for HTML webpage
+        if b"<!doctype html" in prefix or b"<html" in prefix or b"<head" in prefix:
+            target_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "Downloaded content was an HTML webpage instead of a media stream. "
+                "The video link could not be downloaded."
+            )
+        # Check for JavaScript or Ad text
+        if (
+            b"adsbygoogle" in prefix
+            or b"google_ad" in prefix
+            or b"(function(" in prefix
+            or b"window." in prefix
+            or b"var _" in prefix
+            or (b"/*" in prefix and b"*/" in prefix)
+            or b"webpack" in prefix
+        ):
+            target_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "Downloaded content was a JavaScript ad script instead of a media stream."
+            )
 
 
 async def _download_via_aria2(

@@ -114,7 +114,7 @@ async def get_video_metadata(file_path: Path) -> tuple[int, int, int, bool]:
         except Exception:
             pass
 
-    final_duration = max(1, int(round(dur)))
+    final_duration = int(round(dur))
     return final_duration, width, height, has_audio
 
 
@@ -196,21 +196,29 @@ async def prepare_video_upload_data(
     """
     async with _METADATA_SEMAPHORE:
         duration, width, height, has_audio = await get_video_metadata(file_path)
-        if not has_audio:
+
+        # Guard against corrupted files or ad scripts masquerading as video
+        if width == 0 and height == 0 and duration <= 0:
+            raise RuntimeError(f"Corrupted or invalid video: no playable video streams detected in {file_path.name}")
+        if duration < 1 and (width == 0 or height == 0):
+            raise RuntimeError(f"Invalid video file: corrupted media stream ({duration}s, {width}x{height}) in {file_path.name}")
+
+        if not has_audio and width > 0 and height > 0:
             file_path = await ensure_video_has_audio(file_path)
             duration, width, height, _ = await get_video_metadata(file_path)
 
+        upload_duration = max(1, duration)
         thumb_to_use = custom_thumb if (custom_thumb and Path(custom_thumb).exists()) else None
         generated_thumb = None
 
         if not thumb_to_use:
             generated_thumb = file_path.parent / f"thumb_{uuid.uuid4().hex[:8]}_{file_path.stem}.jpg"
-            thumb_to_use = await generate_thumbnail(file_path, generated_thumb, duration)
+            thumb_to_use = await generate_thumbnail(file_path, generated_thumb, upload_duration)
             if not thumb_to_use:
                 generated_thumb = None
 
         actual_thumb = str(thumb_to_use) if (thumb_to_use and Path(thumb_to_use).exists() and Path(thumb_to_use).stat().st_size > 0) else None
-        return file_path, duration, width, height, generated_thumb, actual_thumb
+        return file_path, upload_duration, width, height, generated_thumb, actual_thumb
 
 
 async def upload_file(

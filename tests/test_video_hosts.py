@@ -36,16 +36,20 @@ class TestVideoHosts(unittest.TestCase):
         self.assertTrue(is_streamtape_host("stape.fun"))
         self.assertTrue(is_streamtape_host("watchadsontape.com"))
 
-        # LuluStream & LuluVideo Mirrors
+        # LuluStream & LuluVideo & Lplaygo Mirrors
         self.assertTrue(is_matching_host("luluvdo.com", LULUSTREAM_DOMAINS))
         self.assertTrue(is_matching_host("luluvideo.com", LULUSTREAM_DOMAINS))
         self.assertTrue(is_matching_host("luluvido.com", LULUSTREAM_DOMAINS))
         self.assertTrue(is_matching_host("lulustream.com", LULUSTREAM_DOMAINS))
+        self.assertTrue(is_matching_host("lplaygo.com", LULUSTREAM_DOMAINS))
+        self.assertTrue(is_matching_host("lplaygo.net", LULUSTREAM_DOMAINS))
         self.assertTrue(is_luluvid_host("luluvdo.com"))
         self.assertTrue(is_luluvid_host("luluvideo.com"))
         self.assertTrue(is_luluvid_host("luluvido.com"))
         self.assertTrue(is_luluvid_host("sub.luluvdo.com"))
         self.assertTrue(is_luluvid_host("luluvd.com"))
+        self.assertTrue(is_luluvid_host("lplaygo.com"))
+        self.assertTrue(is_luluvid_host("sub.lplaygo.com"))
 
         # Doodstream
         self.assertTrue(is_matching_host("dood.to", DOOD_DOMAINS))

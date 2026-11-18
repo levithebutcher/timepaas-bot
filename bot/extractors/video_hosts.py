@@ -6,7 +6,7 @@ import string
 import logging
 from urllib.parse import urlparse
 import aiohttp
-from bot.config import DEFAULT_USER_AGENT, STREAMTAPE_LOGIN, STREAMTAPE_KEY
+from bot.config import DEFAULT_USER_AGENT, STREAMTAPE_LOGIN, STREAMTAPE_KEY, LPLAYGO_KEY, STREAMFILE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,9 @@ LULUSTREAM_DOMAINS = {
     # LuluStream & mirrors
     "lulustream.com", "lulustream.net", "lulustream.org", "lulustream.to",
     "lulu.to", "lulu.st", "lulusp.com", "pondr.org", "lulupdo.com",
-    "streamhihi.com", "cdn1.site"
+    "streamhihi.com", "cdn1.site",
+    # Lplaygo mirrors
+    "lplaygo.com", "lplaygo.net", "lplaygo.org"
 }
 
 STREAMFILES_DOMAINS = {
@@ -172,11 +174,11 @@ def is_streamtape_host(netloc: str) -> bool:
 
 
 def is_luluvid_host(netloc: str) -> bool:
-    """Checks if netloc matches LuluStream / LuluVideo domain set or mirror naming patterns."""
+    """Checks if netloc matches LuluStream / LuluVideo / Lplaygo domain set or mirror naming patterns."""
     netloc = netloc.lower().split(":")[0]
     if is_matching_host(netloc, LULUSTREAM_DOMAINS):
         return True
-    if any(k in netloc for k in ("luluvdo", "luluvideo", "lulustream", "luluvid", "luluvd", "lulupdo", "luluvido")):
+    if any(k in netloc for k in ("luluvdo", "luluvideo", "lulustream", "luluvid", "luluvd", "lulupdo", "luluvido", "lplaygo")):
         return True
     return False
 
@@ -672,16 +674,37 @@ async def resolve_luluvid(url: str) -> dict:
     # Extract clean file ID and construct candidate embed URLs
     parts = [p for p in parsed.path.split("/") if p and p not in ("e", "d", "v", "embed")]
     candidate_urls = []
+    file_id = ""
     if parts:
         raw_file_id = parts[0]
         file_id = raw_file_id.rsplit(".", 1)[0] if "." in raw_file_id else raw_file_id
         # Primary embed format
         candidate_urls.append(f"{base_origin}/e/{file_id}")
-        candidate_urls.append(f"https://lulustream.com/e/{file_id}")
         candidate_urls.append(f"{base_origin}/{file_id}")
+        candidate_urls.append(f"https://lulustream.com/e/{file_id}")
         candidate_urls.append(f"https://lulustream.com/{file_id}")
     if url not in candidate_urls:
         candidate_urls.append(url)
+
+    # Fast API check for Lplaygo if API key is provided
+    if "lplaygo" in parsed.netloc and file_id and LPLAYGO_KEY:
+        try:
+            api_url = f"https://lplaygo.com/api/file/direct_link?key={LPLAYGO_KEY}&file_code={file_id}"
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=6)) as session:
+                async with session.get(api_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("status") == 200 and data.get("result", {}).get("url"):
+                            direct_u = data["result"]["url"]
+                            logger.info(f"Lplaygo direct link resolved via official API: {file_id}")
+                            return {
+                                "type": "m3u8" if ".m3u8" in direct_u else "direct",
+                                "url": direct_u,
+                                "title": f"{file_id}.mp4",
+                                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"{base_origin}/"}
+                            }
+        except Exception as e:
+            logger.debug(f"Lplaygo API direct link lookup failed: {e}")
 
     title = "luluvideo.mp4"
 
@@ -704,8 +727,8 @@ async def resolve_luluvid(url: str) -> dict:
                 if stream_url:
                     stream_headers = {
                         "User-Agent": DEFAULT_USER_AGENT,
-                        "Referer": "https://lulustream.com/",
-                        "Origin": "https://lulustream.com"
+                        "Referer": f"{base_origin}/",
+                        "Origin": base_origin
                     }
                     logger.info(f"LuluStream/LuluVideo stream resolved via aiohttp: {title}")
                     return {
@@ -727,8 +750,8 @@ async def resolve_luluvid(url: str) -> dict:
             if stream_url:
                 stream_headers = {
                     "User-Agent": DEFAULT_USER_AGENT,
-                    "Referer": "https://lulustream.com/",
-                    "Origin": "https://lulustream.com"
+                    "Referer": f"{base_origin}/",
+                    "Origin": base_origin
                 }
                 logger.info(f"LuluStream/LuluVideo stream resolved via curl_cffi: {title}")
                 return {
@@ -755,43 +778,106 @@ async def resolve_luluvid(url: str) -> dict:
 
 
 async def resolve_streamfiles(url: str) -> dict:
-    """Extracts direct m3u8 stream from StreamFiles."""
+    """Extracts direct m3u8 stream from StreamFiles via API, static parsing, stealth curl_cffi, or Playwright fallback."""
     parsed = urlparse(url)
     base_origin = f"{parsed.scheme}://{parsed.netloc}"
     headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"{base_origin}/"}
+
+    parts = [p for p in parsed.path.split("/") if p and p not in ("e", "d", "v", "embed")]
+    file_id = parts[0].rsplit(".", 1)[0] if parts else ""
+
+    # Fast API check for Streamfiles if API key is configured
+    if file_id and STREAMFILE_KEY:
+        try:
+            api_url = f"https://streamfile.net/api/file/direct_link?key={STREAMFILE_KEY}&file_code={file_id}"
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=6)) as session:
+                async with session.get(api_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("status") == 200 and data.get("result", {}).get("url"):
+                            direct_u = data["result"]["url"]
+                            logger.info(f"StreamFiles direct link resolved via official API: {file_id}")
+                            return {
+                                "type": "m3u8" if ".m3u8" in direct_u else "direct",
+                                "url": direct_u,
+                                "title": f"{file_id}.mp4",
+                                "headers": headers
+                            }
+        except Exception as e:
+            logger.debug(f"StreamFiles API direct link lookup failed: {e}")
+
+    title = "streamfiles_video.mp4"
+
+    def _extract_streamfiles_html(html_text: str):
+        if not html_text:
+            return None, None
+        t_match = re.search(r"<title>(.*?)</title>", html_text, re.IGNORECASE)
+        t = None
+        if t_match:
+            raw_t = t_match.group(1).strip()
+            clean_t = re.sub(r"^(Watch|Download)\s+", "", raw_t, flags=re.IGNORECASE).strip()
+            if not clean_t.lower().endswith(".mp4"):
+                clean_t += ".mp4"
+            t = clean_t
+
+        matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html_text)
+        if not matches:
+            unpacked = unpack_dean_edwards(html_text)
+            if unpacked:
+                matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', unpacked)
+        return (matches[0] if matches else None), t
+
+    # 1. Fast static fetch via aiohttp
     try:
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
             async with session.get(url, allow_redirects=True) as resp:
-                if resp.status != 200:
-                    return None
-                html = await resp.text()
-
-        title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
-        title = "streamfiles_video.mp4"
-        if title_match:
-            raw_title = title_match.group(1).strip()
-            clean_title = re.sub(r"^(Watch|Download)\s+", "", raw_title, flags=re.IGNORECASE).strip()
-            if not clean_title.lower().endswith(".mp4"):
-                clean_title += ".mp4"
-            title = clean_title
-
-        m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
-        if not m3u8_matches:
-            unpacked = unpack_dean_edwards(html)
-            if unpacked:
-                m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', unpacked)
-
-        if m3u8_matches:
-            logger.info(f"StreamFiles stream resolved: {title}")
-            return {
-                "type": "m3u8",
-                "url": m3u8_matches[0],
-                "title": title,
-                "headers": headers
-            }
+                if resp.status == 200:
+                    html = await resp.text()
+                    m3u8_url, parsed_title = _extract_streamfiles_html(html)
+                    if parsed_title:
+                        title = parsed_title
+                    if m3u8_url:
+                        logger.info(f"StreamFiles stream resolved via aiohttp: {title}")
+                        return {
+                            "type": "m3u8",
+                            "url": m3u8_url,
+                            "title": title,
+                            "headers": headers
+                        }
     except Exception as e:
-        logger.debug(f"StreamFiles extraction failed for {url}: {e}")
+        logger.debug(f"StreamFiles aiohttp extraction failed for {url}: {e}")
+
+    # 2. Stealth TLS fetch via curl_cffi
+    try:
+        html = await _fetch_stealth_text(url, headers)
+        if html:
+            m3u8_url, parsed_title = _extract_streamfiles_html(html)
+            if parsed_title:
+                title = parsed_title
+            if m3u8_url:
+                logger.info(f"StreamFiles stream resolved via curl_cffi: {title}")
+                return {
+                    "type": "m3u8",
+                    "url": m3u8_url,
+                    "title": title,
+                    "headers": headers
+                }
+    except Exception as e:
+        logger.debug(f"StreamFiles curl_cffi extraction failed: {e}")
+
+    # 3. Playwright Fallback
+    try:
+        from bot.extractors.browser_ext import extract_with_playwright
+        logger.info(f"Triggering Playwright fallback for StreamFiles: {url}")
+        res = await extract_with_playwright(url)
+        if res and res.get("url"):
+            if not res.get("title") or res.get("title") in ("streamfiles_video.mp4", "extracted_media.mp4"):
+                res["title"] = title
+            return res
+    except Exception as e:
+        logger.debug(f"Playwright fallback failed for StreamFiles: {e}")
+
     return None
 
 
