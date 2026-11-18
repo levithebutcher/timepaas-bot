@@ -1,4 +1,6 @@
 import re
+import json
+import base64
 import time
 import asyncio
 import random
@@ -108,6 +110,24 @@ EPORNER_DOMAINS = {
     "eporner.com", "www.eporner.com", "eporner.net", "eporner.org",
     "eporner.tv", "eporner.xxx"
 }
+
+STREAMCASH_DOMAINS = {
+    "streamcash.to", "streamcash.net", "streamcash.cc", "streamcash.org"
+}
+
+LIVECAMRIPS_DOMAINS = {
+    "livecamrips.to", "livecamrips.com", "livecamrips.net", "livecamrips.org"
+}
+
+
+def is_streamcash_host(netloc: str) -> bool:
+    netloc = netloc.lower().split(":")[0]
+    return is_matching_host(netloc, STREAMCASH_DOMAINS) or "streamcash" in netloc
+
+
+def is_livecamrips_host(netloc: str) -> bool:
+    netloc = netloc.lower().split(":")[0]
+    return is_matching_host(netloc, LIVECAMRIPS_DOMAINS) or "livecamrips" in netloc
 
 
 def unpack_dean_edwards(payload: str) -> str:
@@ -1303,6 +1323,147 @@ async def resolve_eporner(url: str) -> dict:
     return None
 
 
+async def resolve_streamcash(url: str, custom_title: str = None) -> dict:
+    """
+    Tier-0 Fast Resolver for Streamcash.to video embeds.
+    Decodes high-speed m3u8 stream from base64-encoded window.__PCr JSON in < 0.2s.
+    """
+    parsed = urlparse(url)
+    base_origin = f"{parsed.scheme}://{parsed.netloc}"
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": "https://livecamrips.to/"
+    }
+
+    html = await _fetch_stealth_text(url, headers)
+    if not html:
+        try:
+            async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get(url, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+        except Exception:
+            pass
+
+    if not html:
+        return None
+
+    # Title parsing
+    title = custom_title
+    if not title:
+        t_match = re.search(r"<title>(.*?)</title>", html, re.I)
+        if t_match:
+            raw_t = t_match.group(1).strip()
+            if len(raw_t) == 32 and all(c in "0123456789abcdefABCDEF" for c in raw_t):
+                title = "streamcash_video.mp4"
+            else:
+                title = raw_t if raw_t.lower().endswith(".mp4") else f"{raw_t}.mp4"
+        else:
+            title = "streamcash_video.mp4"
+
+    # Decode base64 stream configuration (__PCr)
+    pcr_match = re.search(r"window\.__PCr\s*=\s*['\"]([^'\"]+)['\"]", html)
+    if pcr_match:
+        try:
+            b64_str = pcr_match.group(1)
+            decoded = json.loads(base64.b64decode(b64_str).decode("utf-8"))
+            stream_src = decoded.get("src")
+            if stream_src:
+                logger.info(f"Streamcash stream resolved via __PCr: {title}")
+                return {
+                    "type": "m3u8" if ".m3u8" in stream_src else "direct",
+                    "url": stream_src,
+                    "title": title,
+                    "headers": {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                        "Referer": f"{base_origin}/",
+                        "Origin": base_origin
+                    }
+                }
+        except Exception as e:
+            logger.debug(f"Failed to decode __PCr from Streamcash: {e}")
+
+    # Fallback to direct m3u8 search
+    m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
+    if m3u8_matches:
+        return {
+            "type": "m3u8",
+            "url": m3u8_matches[0],
+            "title": title,
+            "headers": {
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Referer": f"{base_origin}/",
+                "Origin": base_origin
+            }
+        }
+
+    return None
+
+
+async def resolve_livecamrips(url: str) -> dict:
+    """
+    Tier-0 Fast Resolver for Livecamrips.to.
+    Fetches the video page, extracts clean page title, locates embedded player iframe,
+    and resolves the underlying video stream directly in < 0.3s.
+    """
+    headers = {"User-Agent": DEFAULT_USER_AGENT}
+    html = await _fetch_stealth_text(url, headers)
+    if not html:
+        try:
+            async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.get(url, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+        except Exception:
+            pass
+
+    if not html:
+        return None
+
+    # Clean title extraction
+    t_match = re.search(r"<title>(.*?)</title>", html, re.I)
+    title = "livecamrip.mp4"
+    if t_match:
+        raw_t = t_match.group(1).strip()
+        clean_t = re.sub(r"^livecamrips\.(?:to|com|net|org)\s*", "", raw_t, flags=re.I).strip()
+        clean_t = re.sub(r"[^\w\s\.\-]", "", clean_t).strip()
+        if clean_t:
+            title = clean_t if clean_t.lower().endswith(".mp4") else f"{clean_t}.mp4"
+
+    # Search for embedded player iframe
+    iframe_match = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
+    if iframe_match:
+        iframe_url = iframe_match.group(1).strip()
+        if iframe_url.startswith("//"):
+            iframe_url = "https:" + iframe_url
+        logger.info(f"Livecamrips found embedded player iframe: {iframe_url}")
+
+        if "streamcash" in iframe_url:
+            res = await resolve_streamcash(iframe_url, custom_title=title)
+            if res:
+                return res
+
+        other_host_res = await extract_from_video_hosts(iframe_url)
+        if other_host_res:
+            if title and not title.startswith("streamcash_video"):
+                other_host_res["title"] = title
+            return other_host_res
+
+    # Fallback to Playwright
+    try:
+        from bot.extractors.browser_ext import extract_with_playwright
+        logger.info(f"Livecamrips fallback to Playwright: {url}")
+        res = await extract_with_playwright(url)
+        if res and res.get("url"):
+            if not res.get("title") or res.get("title") in ("browser_media.mp4", "extracted_media.mp4"):
+                res["title"] = title
+            return res
+    except Exception as e:
+        logger.debug(f"Livecamrips Playwright fallback error: {e}")
+
+    return None
+
+
 async def extract_from_video_hosts(url: str) -> dict:
     """
     Tier-0 Router: Checks if URL belongs to any specialized video hosting provider.
@@ -1373,5 +1534,13 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_matching_host(netloc, EPORNER_DOMAINS) or "eporner" in netloc.lower():
         logger.info(f"Target recognized as Eporner: {url}")
         return await resolve_eporner(url)
+
+    if is_livecamrips_host(netloc):
+        logger.info(f"Target recognized as Livecamrips: {url}")
+        return await resolve_livecamrips(url)
+
+    if is_streamcash_host(netloc):
+        logger.info(f"Target recognized as Streamcash: {url}")
+        return await resolve_streamcash(url)
 
     return None

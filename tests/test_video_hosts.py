@@ -8,6 +8,8 @@ from bot.extractors.video_hosts import (
     is_matching_host,
     is_streamtape_host,
     is_luluvid_host,
+    is_livecamrips_host,
+    is_streamcash_host,
     unpack_dean_edwards,
     evaluate_streamtape_js,
     sanitize_streamtape_url,
@@ -19,6 +21,8 @@ from bot.extractors.video_hosts import (
     FILELIONS_DOMAINS,
     LULUSTREAM_DOMAINS,
     EPORNER_DOMAINS,
+    LIVECAMRIPS_DOMAINS,
+    STREAMCASH_DOMAINS,
     calc_eporner_hash
 )
 
@@ -68,6 +72,14 @@ class TestVideoHosts(unittest.TestCase):
         self.assertTrue(is_matching_host("eporner.com", EPORNER_DOMAINS))
         self.assertTrue(is_matching_host("www.eporner.com", EPORNER_DOMAINS))
         self.assertTrue(is_matching_host("sub.eporner.net", EPORNER_DOMAINS))
+
+        # Livecamrips & Streamcash
+        self.assertTrue(is_matching_host("livecamrips.to", LIVECAMRIPS_DOMAINS))
+        self.assertTrue(is_matching_host("streamcash.to", STREAMCASH_DOMAINS))
+        self.assertTrue(is_livecamrips_host("livecamrips.to"))
+        self.assertTrue(is_livecamrips_host("sub.livecamrips.to"))
+        self.assertTrue(is_streamcash_host("streamcash.to"))
+        self.assertTrue(is_streamcash_host("embed.streamcash.to"))
 
         # Non-matching
         self.assertFalse(is_matching_host("youtube.com", STREAMTAPE_DOMAINS))
