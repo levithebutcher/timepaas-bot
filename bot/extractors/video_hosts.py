@@ -686,9 +686,7 @@ async def resolve_luluvid(url: str) -> dict:
     base_origin = f"{parsed.scheme}://{parsed.netloc}"
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
-        "Referer": f"{base_origin}/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
+        "Referer": f"{base_origin}/"
     }
 
     # Extract clean file ID and construct candidate embed URLs
@@ -728,7 +726,30 @@ async def resolve_luluvid(url: str) -> dict:
 
     title = "luluvideo.mp4"
 
-    # 1. Fast asynchronous static fetch via aiohttp
+    # 1. Stealth TLS fetch via curl_cffi (Primary: obtains genuine token with Chrome TLS impersonation)
+    for target_url in candidate_urls:
+        try:
+            html = await _fetch_stealth_text(target_url, headers)
+            if html:
+                stream_url, stream_type, page_title = _parse_luluvid_content(html)
+                if page_title:
+                    title = page_title
+                if stream_url:
+                    stream_headers = {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                        "Referer": f"{base_origin}/"
+                    }
+                    logger.info(f"LuluStream/LuluVideo stream resolved via curl_cffi: {title}")
+                    return {
+                        "type": stream_type,
+                        "url": stream_url,
+                        "title": title,
+                        "headers": stream_headers
+                    }
+        except Exception as e:
+            logger.debug(f"LuluStream curl_cffi extraction failed for {target_url}: {e}")
+
+    # 2. Fast asynchronous static fetch via aiohttp (Fallback)
     try:
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
@@ -747,8 +768,7 @@ async def resolve_luluvid(url: str) -> dict:
                 if stream_url:
                     stream_headers = {
                         "User-Agent": DEFAULT_USER_AGENT,
-                        "Referer": f"{base_origin}/",
-                        "Origin": base_origin
+                        "Referer": f"{base_origin}/"
                     }
                     logger.info(f"LuluStream/LuluVideo stream resolved via aiohttp: {title}")
                     return {
@@ -759,27 +779,6 @@ async def resolve_luluvid(url: str) -> dict:
                     }
     except Exception as e:
         logger.debug(f"LuluStream aiohttp extraction failed for {url}: {e}")
-
-    # 2. Stealth TLS fetch via curl_cffi (bypasses Cloudflare anti-bot blocks without launching browser)
-    for target_url in candidate_urls:
-        html = await _fetch_stealth_text(target_url, headers)
-        if html:
-            stream_url, stream_type, page_title = _parse_luluvid_content(html)
-            if page_title:
-                title = page_title
-            if stream_url:
-                stream_headers = {
-                    "User-Agent": DEFAULT_USER_AGENT,
-                    "Referer": f"{base_origin}/",
-                    "Origin": base_origin
-                }
-                logger.info(f"LuluStream/LuluVideo stream resolved via curl_cffi: {title}")
-                return {
-                    "type": stream_type,
-                    "url": stream_url,
-                    "title": title,
-                    "headers": stream_headers
-                }
 
     # 3. Playwright Fallback if static regex failed (handles Cloudflare/JS challenge or dynamic token injection)
     try:
@@ -804,7 +803,10 @@ async def resolve_streamfiles(url: str) -> dict:
     headers = {"User-Agent": DEFAULT_USER_AGENT, "Referer": f"{base_origin}/"}
 
     parts = [p for p in parsed.path.split("/") if p and p not in ("e", "d", "v", "embed")]
-    file_id = parts[0].rsplit(".", 1)[0] if parts else ""
+    raw_id = parts[0] if parts else ""
+    file_id = raw_id.rsplit(".", 1)[0] if "." in raw_id else raw_id
+    if file_id.startswith("embed-"):
+        file_id = file_id[6:]
 
     # Fast API check for Streamfiles if API key is configured
     if file_id and STREAMFILE_KEY:
@@ -821,10 +823,21 @@ async def resolve_streamfiles(url: str) -> dict:
                                 "type": "m3u8" if ".m3u8" in direct_u else "direct",
                                 "url": direct_u,
                                 "title": f"{file_id}.mp4",
-                                "headers": headers
+                                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": "https://streamfile.net/"}
                             }
         except Exception as e:
             logger.debug(f"StreamFiles API direct link lookup failed: {e}")
+
+    # Build candidate URLs prioritizing direct embed formats (which contain the master m3u8 playlist)
+    candidate_urls = []
+    if file_id:
+        candidate_urls.append(f"{base_origin}/embed-{file_id}.html")
+        candidate_urls.append(f"https://streamfile.net/embed-{file_id}.html")
+        candidate_urls.append(f"https://streamfiles.net/embed-{file_id}.html")
+        candidate_urls.append(f"{base_origin}/e/{file_id}")
+        candidate_urls.append(f"{base_origin}/{file_id}")
+    if url not in candidate_urls:
+        candidate_urls.append(url)
 
     title = "streamfiles_video.mp4"
 
@@ -851,40 +864,45 @@ async def resolve_streamfiles(url: str) -> dict:
     try:
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.get(url, allow_redirects=True) as resp:
-                if resp.status == 200:
-                    html = await resp.text()
-                    m3u8_url, parsed_title = _extract_streamfiles_html(html)
-                    if parsed_title:
-                        title = parsed_title
-                    if m3u8_url:
-                        logger.info(f"StreamFiles stream resolved via aiohttp: {title}")
-                        return {
-                            "type": "m3u8",
-                            "url": m3u8_url,
-                            "title": title,
-                            "headers": headers
-                        }
+            for target_u in candidate_urls:
+                try:
+                    async with session.get(target_u, allow_redirects=True) as resp:
+                        if resp.status == 200:
+                            html = await resp.text()
+                            m3u8_url, parsed_title = _extract_streamfiles_html(html)
+                            if parsed_title:
+                                title = parsed_title
+                            if m3u8_url:
+                                logger.info(f"StreamFiles stream resolved via aiohttp: {title}")
+                                return {
+                                    "type": "m3u8",
+                                    "url": m3u8_url,
+                                    "title": title,
+                                    "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": "https://streamfile.net/"}
+                                }
+                except Exception:
+                    continue
     except Exception as e:
         logger.debug(f"StreamFiles aiohttp extraction failed for {url}: {e}")
 
     # 2. Stealth TLS fetch via curl_cffi
-    try:
-        html = await _fetch_stealth_text(url, headers)
-        if html:
-            m3u8_url, parsed_title = _extract_streamfiles_html(html)
-            if parsed_title:
-                title = parsed_title
-            if m3u8_url:
-                logger.info(f"StreamFiles stream resolved via curl_cffi: {title}")
-                return {
-                    "type": "m3u8",
-                    "url": m3u8_url,
-                    "title": title,
-                    "headers": headers
-                }
-    except Exception as e:
-        logger.debug(f"StreamFiles curl_cffi extraction failed: {e}")
+    for target_u in candidate_urls:
+        try:
+            html = await _fetch_stealth_text(target_u, headers)
+            if html:
+                m3u8_url, parsed_title = _extract_streamfiles_html(html)
+                if parsed_title:
+                    title = parsed_title
+                if m3u8_url:
+                    logger.info(f"StreamFiles stream resolved via curl_cffi: {title}")
+                    return {
+                        "type": "m3u8",
+                        "url": m3u8_url,
+                        "title": title,
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": "https://streamfile.net/"}
+                    }
+        except Exception as e:
+            logger.debug(f"StreamFiles curl_cffi extraction failed for {target_u}: {e}")
 
     # 3. Playwright Fallback
     try:

@@ -365,6 +365,149 @@ async def download_direct_stream(
     return target_path
 
 
+async def _download_m3u8_via_curl_cffi(
+    m3u8_url: str,
+    target_path: Path,
+    headers: dict = None,
+    progress_callback = None,
+    cancel_event: asyncio.Event = None
+) -> bool:
+    """
+    Downloads an HLS .m3u8 stream using curl_cffi with Chrome TLS impersonation.
+    Completely bypasses Cloudflare WAF / CDN anti-bot blocking (which blocks FFmpeg with 403),
+    fetches AES-128 keys if encrypted, downloads all .ts segments, and remuxes locally via FFmpeg.
+    """
+    try:
+        from curl_cffi.requests import AsyncSession
+        import tempfile
+        from urllib.parse import urljoin
+    except ImportError:
+        return False
+
+    h = {}
+    if headers:
+        for k, v in headers.items():
+            if k.lower() != "origin":
+                h[k] = v
+    if "User-Agent" not in h:
+        h["User-Agent"] = DEFAULT_USER_AGENT
+    tmp_dir = Path(tempfile.mkdtemp(prefix="hls_curl_"))
+
+    try:
+        async with AsyncSession(impersonate="chrome120") as session:
+            # 1. Fetch master playlist
+            r = await session.get(m3u8_url, headers=h, timeout=15)
+            if r.status_code != 200:
+                logger.debug(f"curl_cffi master playlist fetch returned status {r.status_code}")
+                return False
+
+            lines = r.text.splitlines()
+            sub_urls = []
+            for line in lines:
+                line_clean = line.strip()
+                if line_clean and not line_clean.startswith("#"):
+                    sub_urls.append(urljoin(m3u8_url, line_clean))
+
+            playlist_url = m3u8_url
+            if sub_urls and (sub_urls[0].endswith(".m3u8") or "index" in sub_urls[0] or "urlset" in sub_urls[0]):
+                playlist_url = sub_urls[-1]
+                r = await session.get(playlist_url, headers=h, timeout=15)
+                if r.status_code != 200:
+                    return False
+                lines = r.text.splitlines()
+
+            local_lines = []
+            segments = []
+            key_count = 0
+
+            for line in lines:
+                line_str = line.strip()
+                if not line_str:
+                    continue
+                if line_str.startswith("#EXT-X-KEY"):
+                    key_match = re.search(r'URI=["\']([^"\']+)["\']', line_str)
+                    if key_match:
+                        key_url = urljoin(playlist_url, key_match.group(1))
+                        key_fn = f"key_{key_count}.bin"
+                        key_count += 1
+                        r_key = await session.get(key_url, headers=h, timeout=15)
+                        if r_key.status_code != 200:
+                            return False
+                        (tmp_dir / key_fn).write_bytes(r_key.content)
+                        new_key_line = line_str.replace(key_match.group(1), key_fn)
+                        local_lines.append(new_key_line)
+                    else:
+                        local_lines.append(line_str)
+                elif line_str.startswith("#"):
+                    local_lines.append(line_str)
+                else:
+                    seg_url = urljoin(playlist_url, line_str)
+                    seg_idx = len(segments)
+                    seg_fn = f"seg_{seg_idx:05d}.ts"
+                    segments.append((seg_idx, seg_url, tmp_dir / seg_fn))
+                    local_lines.append(seg_fn)
+
+            if not segments:
+                return False
+
+            local_lines.append("#EXT-X-ENDLIST")
+            local_m3u8 = tmp_dir / "local.m3u8"
+            local_m3u8.write_text("\n".join(local_lines), encoding="utf-8")
+
+            sem = asyncio.Semaphore(4)
+            downloaded_bytes = 0
+
+            async def dl_segment(idx, seg_u, dest):
+                nonlocal downloaded_bytes
+                if cancel_event and cancel_event.is_set():
+                    raise asyncio.CancelledError()
+                async with sem:
+                    for attempt in range(4):
+                        if cancel_event and cancel_event.is_set():
+                            raise asyncio.CancelledError()
+                        try:
+                            r_s = await session.get(seg_u, headers=h, timeout=20)
+                            if r_s.status_code == 200 and len(r_s.content) > 0:
+                                dest.write_bytes(r_s.content)
+                                downloaded_bytes += len(r_s.content)
+                                if progress_callback:
+                                    await progress_callback(downloaded_bytes, 0)
+                                return
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            await asyncio.sleep(1)
+                    raise RuntimeError(f"Failed to download segment {idx}")
+
+            tasks = [dl_segment(idx, u, dest) for idx, u, dest in segments]
+            await asyncio.gather(*tasks)
+
+            # Local remux with FFmpeg (offline, zero network)
+            remux_cmd = [
+                "ffmpeg", "-y",
+                "-allowed_extensions", "ALL",
+                "-i", str(local_m3u8),
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(target_path)
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *remux_cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.communicate()
+            return target_path.exists() and target_path.stat().st_size > 0
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug(f"curl_cffi HLS download fallback failed: {e}")
+        return False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 async def _download_m3u8_via_ytdlp(m3u8_url: str, target_path: Path, headers: dict) -> bool:
     """Fallback HLS/M3U8 downloader using yt-dlp when FFmpeg fails."""
     def _sync_dl():
@@ -419,6 +562,17 @@ async def download_m3u8_stream(
             header_lines.append(f"{k}: {v}")
     header_str = "\r\n".join(header_lines) + "\r\n"
 
+    # For CDNs known to enforce browser TLS fingerprints (e.g. *.tnmr.org / Lulu CDN),
+    # use curl_cffi with Chrome impersonation directly to bypass 403 blocking without delay.
+    if any(cdn in m3u8_url for cdn in ("tnmr.org",)):
+        logger.info(f"Target HLS stream uses Cloudflare TLS fingerprinting ({m3u8_url[:50]}...). Using curl_cffi downloader directly.")
+        curl_success = await _download_m3u8_via_curl_cffi(
+            m3u8_url, target_path, clean_headers, progress_callback, cancel_event
+        )
+        if curl_success and target_path.exists() and target_path.stat().st_size > 0:
+            logger.info(f"HLS stream successfully downloaded via direct curl_cffi: {target_path.name}")
+            return target_path
+
     cmd = [
         "ffmpeg",
         "-y",
@@ -460,7 +614,23 @@ async def download_m3u8_stream(
             stderr_out = stderr_bytes.decode("utf-8", errors="ignore")
             logger.warning(f"FFmpeg m3u8 download exited with code {proc.returncode}: {stderr_out[-400:]}")
 
-            # Recognize specific HTTP / Cloudflare failure codes
+            # 1. Primary Fallback: curl_cffi with Chrome TLS impersonation (bypasses Cloudflare 403 blocks)
+            logger.info("Attempting curl_cffi HLS fallback with Chrome TLS impersonation...")
+            curl_success = await _download_m3u8_via_curl_cffi(
+                m3u8_url, target_path, clean_headers, progress_callback, cancel_event
+            )
+            if curl_success and target_path.exists() and target_path.stat().st_size > 0:
+                logger.info(f"HLS stream successfully downloaded via curl_cffi fallback: {target_path.name}")
+                return target_path
+
+            # 2. Secondary Fallback: yt-dlp HLS downloader
+            logger.info("Attempting yt-dlp fallback for m3u8 stream...")
+            fallback_success = await _download_m3u8_via_ytdlp(m3u8_url, target_path, clean_headers)
+            if fallback_success and target_path.exists() and target_path.stat().st_size > 0:
+                logger.info(f"HLS stream successfully downloaded via yt-dlp fallback: {target_path.name}")
+                return target_path
+
+            # If all fallbacks failed, report root cause error
             if "522" in stderr_out or "5XX Server Error" in stderr_out:
                 raise RuntimeError("Host server connection timed out / server down (HTTP 522). Try again later.")
             if "404" in stderr_out or "not found" in stderr_out.lower():
@@ -468,11 +638,7 @@ async def download_m3u8_stream(
             if "403" in stderr_out or "forbidden" in stderr_out.lower():
                 raise RuntimeError("Access forbidden by host CDN (HTTP 403).")
 
-            # Fallback to yt-dlp HLS downloader
-            logger.info("Attempting yt-dlp fallback for m3u8 stream...")
-            fallback_success = await _download_m3u8_via_ytdlp(m3u8_url, target_path, clean_headers)
-            if not fallback_success or not target_path.exists() or target_path.stat().st_size == 0:
-                raise RuntimeError(f"FFmpeg m3u8 download exited with code {proc.returncode}")
+            raise RuntimeError(f"FFmpeg m3u8 download exited with code {proc.returncode}")
 
     except asyncio.CancelledError:
         if proc.returncode is None:
