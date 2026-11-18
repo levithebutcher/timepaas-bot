@@ -249,7 +249,22 @@ async def update_album_pipeline_dashboard(
         alb_num = current_up.get("album_num", 1)
         alb_cnt = current_up.get("count", 1)
         alb_status = current_up.get("status", "Uploading media...")
-        up_text = f"📤 <b>Uploading:</b> Album {alb_num}/{total_albums} ({alb_cnt} videos) • <i>{alb_status}</i>"
+        cb = current_up.get("current", 0)
+        tb = current_up.get("total", 0)
+        if tb > 0 and cb > 0:
+            fn = current_up.get("file_name", "Media")
+            if len(fn) > 28:
+                fn = fn[:25] + "..."
+            safe_fn = html.escape(fn)
+            sp = current_up.get("speed_str", "N/A")
+            bar = generate_bar(cb, tb, length=8)
+            pct = (cb / tb * 100.0)
+            up_text = (
+                f"📤 <b>Uploading:</b> Album {alb_num}/{total_albums} • <code>{safe_fn}</code>\n"
+                f"  └ <code>{bar}</code> {pct:.1f}% ({format_size(cb)} / {format_size(tb)}) • ⚡ {sp}"
+            )
+        else:
+            up_text = f"📤 <b>Uploading:</b> Album {alb_num}/{total_albums} ({alb_cnt} videos) • <i>{alb_status}</i>"
     else:
         if uploaded_albums >= total_albums and total_albums > 0:
             up_text = "📤 <b>Uploading:</b> ✅ <i>All albums uploaded!</i>"
@@ -264,7 +279,7 @@ async def update_album_pipeline_dashboard(
             completed_in_pack = current_dl.get("completed_in_pack", 0)
             lines = [f"📥 <b>Downloading:</b> Pack [{completed_in_pack}/{pack_tot}]"]
             if active_list:
-                for dl_item in active_list[:2]:
+                for dl_item in active_list[:4]:
                     fn = dl_item.get("file_name", "Media")
                     if len(fn) > 28:
                         fn = fn[:25] + "..."
@@ -272,8 +287,17 @@ async def update_album_pipeline_dashboard(
                     cb = dl_item.get("current", 0)
                     tb = dl_item.get("total", 0)
                     sp = dl_item.get("speed_str", "N/A")
+                    eta = dl_item.get("eta_str", "00:00")
                     bar = generate_bar(cb, tb, length=8)
-                    lines.append(f"• <code>{safe_fn}</code> — {bar} ({format_size(cb)}) • ⚡ {sp}")
+                    pct = (cb / tb * 100.0) if tb > 0 else 0.0
+                    tot_s = format_size(tb) if tb > 0 else "..."
+                    if tb > 0:
+                        lines.append(
+                            f"• <code>{safe_fn}</code>\n"
+                            f"  └ <code>{bar}</code> {pct:.1f}% ({format_size(cb)} / {tot_s}) • ⚡ {sp}"
+                        )
+                    else:
+                        lines.append(f"• <code>{safe_fn}</code> — <i>{sp}</i>")
             else:
                 lines.append("• <i>Finalizing pack...</i>")
             dl_text = "\n".join(lines)
@@ -287,9 +311,10 @@ async def update_album_pipeline_dashboard(
             speed = current_dl.get("speed_str", "N/A")
             eta = current_dl.get("eta_str", "N/A")
             bar = generate_bar(curr_b, tot_b, length=8)
+            pct = (curr_b / tot_b * 100.0) if tot_b > 0 else 0.0
             dl_text = (
                 f"📥 <b>Downloading:</b> <code>{safe_name}</code>\n"
-                f"• {bar} ({format_size(curr_b)} / {format_size(tot_b)}) • ⚡ {speed} • ⏱ {eta}"
+                f"  └ <code>{bar}</code> {pct:.1f}% ({format_size(curr_b)} / {format_size(tot_b)}) • ⚡ {speed} • ⏱ {eta}"
             )
     else:
         if completed_files >= total_files and total_files > 0:

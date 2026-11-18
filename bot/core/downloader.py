@@ -485,6 +485,8 @@ async def _download_m3u8_via_curl_cffi(
             # Local remux with FFmpeg (offline, zero network)
             remux_cmd = [
                 "ffmpeg", "-y",
+                "-extension_picky", "0",
+                "-allowed_segment_extensions", "ALL",
                 "-allowed_extensions", "ALL",
                 "-i", str(local_m3u8),
                 "-c", "copy",
@@ -576,6 +578,11 @@ async def download_m3u8_stream(
     cmd = [
         "ffmpeg",
         "-y",
+        "-extension_picky", "0",
+        "-allowed_segment_extensions", "ALL",
+        "-allowed_extensions", "ALL",
+        "-http_persistent", "1",
+        "-http_multiple", "1",
         "-headers", header_str,
         "-reconnect", "1",
         "-reconnect_at_eof", "1",

@@ -355,7 +355,8 @@ async def upload_single_to_dump(
     dump_chat_id: int | str,
     file_path: Path,
     caption: str = "",
-    custom_thumb: str = None
+    custom_thumb: str = None,
+    progress_callback = None
 ) -> dict:
     """
     Uploads a single video directly to the designated Dump Channel / Group (Option B).
@@ -379,7 +380,8 @@ async def upload_single_to_dump(
                 width=width,
                 height=height,
                 thumb=actual_thumb,
-                supports_streaming=True
+                supports_streaming=True,
+                progress=progress_callback
             )
         finally:
             if generated_thumb and generated_thumb.exists():

@@ -934,35 +934,46 @@ async def resolve_vidara(url: str) -> dict:
         if not filecode:
             return None
 
-        api_url = "https://gasobni.com/api/stream"
+        candidate_domains = []
+        if parsed.netloc:
+            candidate_domains.append(parsed.netloc)
+        for d in ("gasobni.com", "vidara.to", "vidara.so"):
+            if d not in candidate_domains:
+                candidate_domains.append(d)
+
         payload = {"filecode": filecode}
-        headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
-            "Origin": "https://gasobni.com",
-            "Referer": f"https://gasobni.com/e/{filecode}",
-            "Content-Type": "application/json"
-        }
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8.0)) as session:
-            async with session.post(api_url, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    streaming_url = data.get("streaming_url")
-                    title = data.get("title") or f"{filecode}.mp4"
-                    if not title.lower().endswith((".mp4", ".mkv")):
-                        title += ".mp4"
+            for domain in candidate_domains:
+                try:
+                    api_url = f"https://{domain}/api/stream"
+                    headers = {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                        "Origin": f"https://{domain}",
+                        "Referer": f"https://{domain}/e/{filecode}",
+                        "Content-Type": "application/json"
+                    }
+                    async with session.post(api_url, json=payload, headers=headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            streaming_url = data.get("streaming_url")
+                            title = data.get("title") or f"{filecode}.mp4"
+                            if not title.lower().endswith((".mp4", ".mkv")):
+                                title += ".mp4"
 
-                    if streaming_url:
-                        logger.info(f"Vidara stream resolved via direct API: {title}")
-                        return {
-                            "type": "m3u8" if ".m3u8" in streaming_url else "direct",
-                            "url": streaming_url,
-                            "title": title,
-                            "headers": {
-                                "User-Agent": DEFAULT_USER_AGENT,
-                                "Referer": "https://gasobni.com/"
-                            }
-                        }
+                            if streaming_url:
+                                logger.info(f"Vidara stream resolved via {domain} API: {title}")
+                                return {
+                                    "type": "m3u8" if ".m3u8" in streaming_url else "direct",
+                                    "url": streaming_url,
+                                    "title": title,
+                                    "headers": {
+                                        "User-Agent": DEFAULT_USER_AGENT,
+                                        "Referer": f"https://{domain}/"
+                                    }
+                                }
+                except Exception as de:
+                    logger.debug(f"Vidara API attempt failed for {domain}: {de}")
     except Exception as e:
         logger.debug(f"Vidara fast extraction failed for {url}: {e}")
     return None

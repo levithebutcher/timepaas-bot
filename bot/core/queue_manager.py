@@ -761,14 +761,33 @@ class QueueManager:
                                 # Option B (Dump Relay Mode): Upload immediately and clear local disk
                                 if dump_channel:
                                     try:
+                                        start_up_time = time.time()
+                                        async def dump_progress(curr, tot):
+                                            if batch.cancel_event.is_set():
+                                                raise asyncio.CancelledError()
+                                            nonlocal current_up_info
+                                            now = time.time()
+                                            elapsed = now - start_up_time
+                                            sp_str = "N/A"
+                                            if elapsed > 0 and curr > 0:
+                                                sp = curr / elapsed
+                                                sp_str = f"{format_size(int(sp))}/s"
+                                            current_up_info = {
+                                                "file_name": sub_part.name,
+                                                "current": curr,
+                                                "total": tot,
+                                                "speed_str": sp_str,
+                                                "album_num": chunk_idx + 1,
+                                                "count": len(chunk_urls),
+                                                "status": f"Relaying to Dump [{global_idx}/{total_files}]"
+                                            }
+                                            await refresh_dashboard()
+
                                         async with dl_lock:
-                                            active_dls[item_idx] = {
-                                                "file_name": f"Relaying {sub_part.name[:22]}...",
-                                                "current": sub_part.stat().st_size if sub_part.exists() else 0,
-                                                "total": sub_part.stat().st_size if sub_part.exists() else 0,
-                                                "speed_str": "Relaying",
-                                                "eta_str": "00:00",
-                                                "item_num": item_idx + 1,
+                                            active_dls.pop(item_idx, None)
+                                            current_dl_info = {
+                                                "active_list": list(active_dls.values()),
+                                                "completed_in_pack": len(downloaded_items),
                                                 "chunk_total": len(chunk_urls)
                                             }
                                         await refresh_dashboard(force=True)
@@ -778,11 +797,14 @@ class QueueManager:
                                             dump_chat_id=dump_channel,
                                             file_path=sub_part,
                                             caption=part_caption,
-                                            custom_thumb=user_settings.get("custom_thumb")
+                                            custom_thumb=user_settings.get("custom_thumb"),
+                                            progress_callback=dump_progress
                                         )
+                                        current_up_info = None
                                         async with dl_lock:
                                             downloaded_items.append((dump_info, part_caption, item_idx))
                                     except Exception as dump_err:
+                                        current_up_info = None
                                         logger.warning(f"Dump relay failed for {sub_part.name} ({dump_err}), keeping local file...")
                                         async with dl_lock:
                                             downloaded_items.append((sub_part, part_caption, item_idx))
