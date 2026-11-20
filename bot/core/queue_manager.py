@@ -54,7 +54,6 @@ class DownloadTask:
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     error_msg: str = ""
     start_time: float = field(default_factory=time.time)
-    custom_thumb: str = None
 
 
 @dataclass
@@ -72,7 +71,6 @@ class BatchInfo:
     album_ready_items: list[tuple[Path, str, int]] = field(default_factory=list)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     status_msg_id: int = 0
-    custom_thumb: str = None
 
 
 def resolve_clean_title(media_info: dict, url: str) -> str:
@@ -125,8 +123,7 @@ class QueueManager:
         user_id: int,
         total_count: int,
         is_album: bool = False,
-        status_msg_id: int = 0,
-        custom_thumb: str = None
+        status_msg_id: int = 0
     ) -> BatchInfo:
         batch = BatchInfo(
             batch_id=batch_id,
@@ -134,8 +131,7 @@ class QueueManager:
             user_id=user_id,
             total_count=total_count,
             is_album=is_album,
-            status_msg_id=status_msg_id,
-            custom_thumb=custom_thumb
+            status_msg_id=status_msg_id
         )
         self.batches[batch_id] = batch
         return batch
@@ -381,7 +377,6 @@ class QueueManager:
                         await upload_photo_albums(client, task.chat_id, archive_result["images"])
 
                     # 3. Always send any videos found in archive
-                    task_thumb = user_settings.get("custom_thumb") or task.custom_thumb
                     for vid in archive_result["videos"]:
                         if task.cancel_event.is_set():
                             raise asyncio.CancelledError()
@@ -390,7 +385,7 @@ class QueueManager:
                             chat_id=task.chat_id,
                             file_path=vid,
                             caption=f"🎥 `{vid.name}`",
-                            custom_thumb=task_thumb
+                            custom_thumb=user_settings.get("custom_thumb")
                         )
 
                     remove_path(archive_result["extract_path"])
@@ -479,13 +474,12 @@ class QueueManager:
                     )
 
                 caption = user_settings.get("custom_caption") or f"🎬 `{part.name}`"
-                task_thumb = user_settings.get("custom_thumb") or task.custom_thumb
                 await upload_file(
                     client=client,
                     chat_id=task.chat_id,
                     file_path=part,
                     caption=caption,
-                    custom_thumb=task_thumb,
+                    custom_thumb=user_settings.get("custom_thumb"),
                     progress_callback=up_progress
                 )
 
@@ -504,8 +498,6 @@ class QueueManager:
 
         finally:
             remove_path(task_dir)
-            if task.custom_thumb and "msg_thumb_" in str(task.custom_thumb):
-                remove_path(task.custom_thumb)
 
     async def _handle_task_completion(self, client, task: DownloadTask, outcome: str):
         # Decrement user task count
@@ -555,13 +547,12 @@ class QueueManager:
             if batch.is_album and batch.album_ready_items:
                 user_settings = await get_user_settings(batch.user_id)
                 album_videos = [(item[0], item[1]) for item in batch.album_ready_items]
-                album_thumb = user_settings.get("custom_thumb") or batch.custom_thumb
                 try:
                     await upload_video_albums(
                         client=client,
                         chat_id=batch.chat_id,
                         video_items=album_videos,
-                        custom_thumb=album_thumb
+                        custom_thumb=user_settings.get("custom_thumb")
                     )
                 except Exception as e:
                     logger.error(f"Failed to upload album batch {batch.batch_id}: {e}")
@@ -801,13 +792,12 @@ class QueueManager:
                                             }
                                         await refresh_dashboard(force=True)
 
-                                        album_thumb = user_settings.get("custom_thumb") or batch.custom_thumb
                                         dump_info = await upload_single_to_dump(
                                             client=client,
                                             dump_chat_id=dump_channel,
                                             file_path=sub_part,
                                             caption=part_caption,
-                                            custom_thumb=album_thumb,
+                                            custom_thumb=user_settings.get("custom_thumb"),
                                             progress_callback=dump_progress
                                         )
                                         current_up_info = None
@@ -886,12 +876,11 @@ class QueueManager:
                                 )
 
                             if local_files:
-                                album_thumb = user_settings.get("custom_thumb") or batch.custom_thumb
                                 await upload_video_albums(
                                     client=client,
                                     chat_id=batch.chat_id,
                                     video_items=local_files,
-                                    custom_thumb=album_thumb,
+                                    custom_thumb=user_settings.get("custom_thumb"),
                                     chunk_size=10
                                 )
 
@@ -929,8 +918,6 @@ class QueueManager:
             # Clean any remaining temp directories for this batch
             for p in DOWNLOAD_DIR.glob(f"album_{batch.batch_id}_*"):
                 remove_path(p)
-            if batch.custom_thumb and "msg_thumb_" in str(batch.custom_thumb):
-                remove_path(batch.custom_thumb)
 
             # Finish dashboard message
             if batch.cancel_event.is_set():

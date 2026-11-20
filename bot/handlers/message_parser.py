@@ -26,7 +26,7 @@ except ImportError:
     Message = object
     InlineKeyboardMarkup = None
     InlineKeyboardButton = None
-from bot.config import MAX_USER_TASKS, DOWNLOAD_DIR
+from bot.config import MAX_USER_TASKS
 from bot.handlers.commands import is_authorized
 from bot.core.queue_manager import queue_manager, DownloadTask
 from bot.core.sorter import natural_sort_urls
@@ -59,31 +59,6 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
 
     # Intelligent natural sort with fallback to original submission order
     clean_urls = natural_sort_urls(clean_urls)
-
-    # Check if a photo or image is attached to message or replied message to use as thumbnail
-    attached_thumb = None
-    target_media = None
-    if getattr(message, "photo", None):
-        target_media = message
-    elif getattr(message, "document", None) and getattr(message.document, "mime_type", "").startswith("image/"):
-        target_media = message
-    elif getattr(message, "reply_to_message", None):
-        rep = message.reply_to_message
-        if getattr(rep, "photo", None):
-            target_media = rep
-        elif getattr(rep, "document", None) and getattr(rep.document, "mime_type", "").startswith("image/"):
-            target_media = rep
-
-    if target_media and hasattr(client, "download_media"):
-        try:
-            thumb_dir = DOWNLOAD_DIR / "thumbnails"
-            thumb_dir.mkdir(parents=True, exist_ok=True)
-            cand_thumb = thumb_dir / f"msg_thumb_{uuid.uuid4().hex[:8]}.jpg"
-            await asyncio.wait_for(client.download_media(target_media, file_name=str(cand_thumb)), timeout=10.0)
-            if cand_thumb.exists() and cand_thumb.stat().st_size > 0:
-                attached_thumb = str(cand_thumb)
-        except Exception as e:
-            logger.debug(f"Could not download attached photo for thumbnail: {e}")
 
     # Auto-detect album mode: if multiple links sent together, automatically group into video album!
     if is_album is None:
@@ -137,8 +112,7 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
             user_id=user_id,
             total_count=len(clean_urls),
             is_album=True,
-            status_msg_id=status_msg.id,
-            custom_thumb=attached_thumb
+            status_msg_id=status_msg.id
         )
 
         asyncio.create_task(
@@ -158,8 +132,7 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
         chat_id=message.chat.id,
         user_id=user_id,
         total_count=len(clean_urls),
-        is_album=False,
-        custom_thumb=attached_thumb
+        is_album=False
     )
 
     ack_msg = await message.reply_text(
@@ -193,8 +166,7 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
             chat_id=message.chat.id,
             url=url,
             status_msg_id=status_msg.id,
-            batch_id=batch_id,
-            custom_thumb=attached_thumb
+            batch_id=batch_id
         )
 
         await queue_manager.enqueue_task(task)
