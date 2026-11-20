@@ -54,9 +54,9 @@ for candidate_cookie in [
         break
 
 # Dump Channel / Group Configuration (Option B Relay)
-raw_dump = os.getenv("DUMP_CHANNEL_ID", "").strip().strip('"\'')
+raw_dump = (os.getenv("DUMP_CHANNEL_ID") or "-1003736765994").strip().strip('"\'')
 DUMP_CHANNEL_ID = None
-if raw_dump:
+if raw_dump and raw_dump.lower() not in ("none", "false", "0", "disabled"):
     try:
         DUMP_CHANNEL_ID = int(raw_dump)
     except ValueError:

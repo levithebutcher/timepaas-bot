@@ -93,8 +93,10 @@ async def get_dump_channel() -> int | str | None:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             async with db.execute("SELECT value FROM bot_settings WHERE key = 'dump_channel_id'") as cursor:
                 row = await cursor.fetchone()
-                if row and row[0]:
-                    val = str(row[0]).strip()
+                if row:
+                    val = str(row[0]).strip() if row[0] is not None else ""
+                    if val.lower() in ("", "0", "none", "disabled", "false"):
+                        return None
                     try:
                         return int(val)
                     except ValueError:
@@ -108,7 +110,11 @@ async def set_dump_channel(channel_id: int | str | None):
     """Updates or clears the dump channel ID in the database."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         if channel_id is None:
-            await db.execute("DELETE FROM bot_settings WHERE key = 'dump_channel_id'")
+            await db.execute("""
+                INSERT INTO bot_settings (key, value)
+                VALUES ('dump_channel_id', 'disabled')
+                ON CONFLICT(key) DO UPDATE SET value = 'disabled'
+            """)
         else:
             await db.execute("""
                 INSERT INTO bot_settings (key, value)
