@@ -143,8 +143,14 @@ async def setthumb_handler(client: Client, message: Message):
         return
 
     replied = message.reply_to_message
-    if not replied or not (replied.photo or (replied.document and replied.document.mime_type.startswith("image/"))):
-        await message.reply_text("⚠️ Please **reply to an image** with `/setthumb`.")
+    target_msg = None
+    if replied and (replied.photo or (replied.document and getattr(replied.document, "mime_type", "").startswith("image/"))):
+        target_msg = replied
+    elif message.photo or (message.document and getattr(message.document, "mime_type", "").startswith("image/")):
+        target_msg = message
+
+    if not target_msg:
+        await message.reply_text("⚠️ Please **reply to an image** or send an image with `/setthumb`.")
         return
 
     thumb_dir = DOWNLOAD_DIR / "thumbnails"
@@ -153,7 +159,7 @@ async def setthumb_handler(client: Client, message: Message):
 
     msg = await message.reply_text("⏳ Saving custom thumbnail...")
     try:
-        await client.download_media(replied, file_name=str(thumb_path))
+        await client.download_media(target_msg, file_name=str(thumb_path))
         await set_user_thumb(message.from_user.id, str(thumb_path))
         await msg.edit_text("✅ **Custom thumbnail saved successfully!**")
     except Exception as e:
@@ -175,7 +181,8 @@ async def setcaption_handler(client: Client, message: Message):
     if not is_authorized(message.from_user.id):
         return
 
-    parts = message.text.split(maxsplit=1)
+    raw_text = message.text or message.caption or ""
+    parts = raw_text.split(maxsplit=1)
     if len(parts) < 2:
         await message.reply_text("⚠️ Usage: `/setcaption Your Custom Caption Here`")
         return
@@ -351,7 +358,8 @@ async def setdump_handler(client: Client, message: Message):
     if not is_authorized(message.from_user.id):
         return
 
-    parts = message.text.split(maxsplit=1)
+    raw_text = message.text or message.caption or ""
+    parts = raw_text.split(maxsplit=1)
     raw_input = parts[1].strip() if len(parts) > 1 else ""
     reply_to = message.reply_to_message
 

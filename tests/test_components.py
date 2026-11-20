@@ -573,6 +573,142 @@ class TestComponents(unittest.TestCase):
             _validate_downloaded_file(valid_file)
             self.assertTrue(valid_file.exists())
 
+    def test_message_url_handler_with_photo_caption(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from bot.handlers.message_parser import message_url_handler
+
+        client = MagicMock()
+        status_msg = MagicMock()
+        status_msg.id = 999
+        client.reply_text = AsyncMock(return_value=status_msg)
+        client.download_media = AsyncMock()
+
+        # Simulate forwarded Telegram photo message with link in caption (message.text is None)
+        message = MagicMock()
+        message.from_user.id = 12345
+        message.chat.id = 12345
+        message.text = None
+        message.caption = "🔥 Amazing video: https://livecamrips.to/watch/abc12345\nEnjoy!"
+        message.photo = MagicMock()
+        message.document = None
+        message.reply_to_message = None
+        message.reply_text = AsyncMock(return_value=status_msg)
+
+        with patch("bot.handlers.message_parser.is_authorized", return_value=True), \
+             patch("bot.core.queue_manager.queue_manager.enqueue_task", new_callable=AsyncMock) as mock_enqueue:
+            asyncio.run(message_url_handler(client, message))
+
+            # Verify that task was enqueued with the extracted URL from caption
+            self.assertTrue(mock_enqueue.called)
+            enqueued_task = mock_enqueue.call_args[0][0]
+            self.assertEqual(enqueued_task.url, "https://livecamrips.to/watch/abc12345")
+            self.assertEqual(enqueued_task.user_id, 12345)
+
+    def test_message_url_handler_with_replied_media_caption(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from bot.handlers.message_parser import message_url_handler
+
+        client = MagicMock()
+        status_msg = MagicMock()
+        status_msg.id = 999
+        client.reply_text = AsyncMock(return_value=status_msg)
+
+        # Main message has no URL, replied message is a photo with a link in caption
+        replied_msg = MagicMock()
+        replied_msg.text = None
+        replied_msg.caption = "Original post: https://vidguard.to/v/xyz987"
+        replied_msg.photo = MagicMock()
+        replied_msg.document = None
+
+        message = MagicMock()
+        message.from_user.id = 12345
+        message.chat.id = 12345
+        message.text = "download this please"
+        message.caption = None
+        message.photo = None
+        message.document = None
+        message.reply_to_message = replied_msg
+        message.reply_text = AsyncMock(return_value=status_msg)
+
+        with patch("bot.handlers.message_parser.is_authorized", return_value=True), \
+             patch("bot.core.queue_manager.queue_manager.enqueue_task", new_callable=AsyncMock) as mock_enqueue:
+            asyncio.run(message_url_handler(client, message))
+
+            self.assertTrue(mock_enqueue.called)
+            enqueued_task = mock_enqueue.call_args[0][0]
+            self.assertEqual(enqueued_task.url, "https://vidguard.to/v/xyz987")
+
+    def test_album_command_handler_with_caption(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from bot.handlers.message_parser import album_command_handler
+
+        client = MagicMock()
+        status_msg = MagicMock()
+        status_msg.id = 888
+
+        message = MagicMock()
+        message.from_user.id = 12345
+        message.chat.id = 12345
+        message.text = None
+        message.caption = "/album https://host1.com/v1.mp4 https://host2.com/v2.mp4"
+        message.photo = MagicMock()
+        message.document = None
+        message.reply_to_message = None
+        message.reply_text = AsyncMock(return_value=status_msg)
+
+        with patch("bot.handlers.message_parser.is_authorized", return_value=True), \
+             patch("bot.core.queue_manager.queue_manager.process_album_pipeline") as mock_pipeline:
+            asyncio.run(album_command_handler(client, message))
+
+            # Album pipeline started with both URLs
+            self.assertTrue(mock_pipeline.called)
+            urls_arg = mock_pipeline.call_args[1]["urls"]
+            self.assertEqual(len(urls_arg), 2)
+            self.assertIn("https://host1.com/v1.mp4", urls_arg)
+            self.assertIn("https://host2.com/v2.mp4", urls_arg)
+
+    def test_setthumb_handler_direct_image(self):
+        import asyncio
+        import tempfile
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from bot.handlers.commands import setthumb_handler
+
+        client = MagicMock()
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(b"\xff\xd8\xff\xe0" + b"\x00" * 100)
+
+        async def fake_download(target, file_name):
+            Path(file_name).write_bytes(tmp_path.read_bytes())
+
+        client.download_media = AsyncMock(side_effect=fake_download)
+
+        # User sends photo directly with caption "/setthumb" (no replied message)
+        reply_msg = MagicMock()
+        reply_msg.edit_text = AsyncMock()
+
+        message = MagicMock()
+        message.from_user.id = 12345
+        message.reply_to_message = None
+        message.photo = MagicMock()
+        message.document = None
+        message.caption = "/setthumb"
+        message.reply_text = AsyncMock(return_value=reply_msg)
+
+        with patch("bot.handlers.commands.is_authorized", return_value=True), \
+             patch("bot.handlers.commands.set_user_thumb", new_callable=AsyncMock) as mock_set_thumb:
+            asyncio.run(setthumb_handler(client, message))
+
+            self.assertTrue(mock_set_thumb.called)
+            self.assertEqual(mock_set_thumb.call_args[0][0], 12345)
+            self.assertIn("thumb_12345.jpg", mock_set_thumb.call_args[0][1])
+
+        if tmp_path.exists():
+            tmp_path.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

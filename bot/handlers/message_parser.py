@@ -9,6 +9,7 @@ try:
 except ImportError:
     class _MockFilter:
         def __and__(self, other): return self
+        def __or__(self, other): return self
         def __invert__(self): return self
     class _MockClient:
         @staticmethod
@@ -17,13 +18,15 @@ except ImportError:
     Client = _MockClient
     filters = type("filters", (), {
         "text": _MockFilter(),
+        "caption": _MockFilter(),
         "private": _MockFilter(),
-        "command": lambda *args: _MockFilter()
+        "command": lambda *args: _MockFilter(),
+        "regex": lambda *args: _MockFilter(),
     })
     Message = object
     InlineKeyboardMarkup = None
     InlineKeyboardButton = None
-from bot.config import MAX_USER_TASKS
+from bot.config import MAX_USER_TASKS, DOWNLOAD_DIR
 from bot.handlers.commands import is_authorized
 from bot.core.queue_manager import queue_manager, DownloadTask
 from bot.core.sorter import natural_sort_urls
@@ -35,7 +38,7 @@ URL_REGEX = re.compile(r"(https?://[^\s<>\"']+|www\.[^\s<>\"']+)", re.IGNORECASE
 
 async def process_submitted_urls(client: Client, message: Message, target_text: str, is_album: bool = None):
     """Processes URL extraction, queue limit checking, and enqueuing tasks."""
-    user_id = message.from_user.id
+    user_id = message.from_user.id if getattr(message, "from_user", None) else message.chat.id
 
     # Find all valid URLs
     raw_urls = URL_REGEX.findall(target_text)
@@ -56,6 +59,31 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
 
     # Intelligent natural sort with fallback to original submission order
     clean_urls = natural_sort_urls(clean_urls)
+
+    # Check if a photo or image is attached to message or replied message to use as thumbnail
+    attached_thumb = None
+    target_media = None
+    if getattr(message, "photo", None):
+        target_media = message
+    elif getattr(message, "document", None) and getattr(message.document, "mime_type", "").startswith("image/"):
+        target_media = message
+    elif getattr(message, "reply_to_message", None):
+        rep = message.reply_to_message
+        if getattr(rep, "photo", None):
+            target_media = rep
+        elif getattr(rep, "document", None) and getattr(rep.document, "mime_type", "").startswith("image/"):
+            target_media = rep
+
+    if target_media and hasattr(client, "download_media"):
+        try:
+            thumb_dir = DOWNLOAD_DIR / "thumbnails"
+            thumb_dir.mkdir(parents=True, exist_ok=True)
+            cand_thumb = thumb_dir / f"msg_thumb_{uuid.uuid4().hex[:8]}.jpg"
+            await asyncio.wait_for(client.download_media(target_media, file_name=str(cand_thumb)), timeout=10.0)
+            if cand_thumb.exists() and cand_thumb.stat().st_size > 0:
+                attached_thumb = str(cand_thumb)
+        except Exception as e:
+            logger.debug(f"Could not download attached photo for thumbnail: {e}")
 
     # Auto-detect album mode: if multiple links sent together, automatically group into video album!
     if is_album is None:
@@ -109,7 +137,8 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
             user_id=user_id,
             total_count=len(clean_urls),
             is_album=True,
-            status_msg_id=status_msg.id
+            status_msg_id=status_msg.id,
+            custom_thumb=attached_thumb
         )
 
         asyncio.create_task(
@@ -129,7 +158,8 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
         chat_id=message.chat.id,
         user_id=user_id,
         total_count=len(clean_urls),
-        is_album=False
+        is_album=False,
+        custom_thumb=attached_thumb
     )
 
     ack_msg = await message.reply_text(
@@ -163,7 +193,8 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
             chat_id=message.chat.id,
             url=url,
             status_msg_id=status_msg.id,
-            batch_id=batch_id
+            batch_id=batch_id,
+            custom_thumb=attached_thumb
         )
 
         await queue_manager.enqueue_task(task)
@@ -176,14 +207,16 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
 
 @Client.on_message(filters.command("album") & filters.private)
 async def album_command_handler(client: Client, message: Message):
-    user_id = message.from_user.id
+    user_id = message.from_user.id if getattr(message, "from_user", None) else message.chat.id
     if not is_authorized(user_id):
         await message.reply_text("⛔ **Access Denied.** You are not authorized to use this bot.")
         return
 
-    target_text = message.text or ""
-    if message.reply_to_message and message.reply_to_message.text:
-        target_text += "\n" + message.reply_to_message.text
+    target_text = message.text or message.caption or ""
+    if message.reply_to_message:
+        replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+        if replied_text:
+            target_text += "\n" + replied_text
 
     raw_urls = URL_REGEX.findall(target_text)
     if not raw_urls:
@@ -199,19 +232,21 @@ async def album_command_handler(client: Client, message: Message):
     await process_submitted_urls(client, message, target_text, is_album=True)
 
 
-@Client.on_message(filters.text & filters.private & ~filters.regex(r"^/"))
+@Client.on_message((filters.text | filters.caption) & filters.private & ~filters.regex(r"^/"))
 async def message_url_handler(client: Client, message: Message):
-    user_id = message.from_user.id
+    user_id = message.from_user.id if getattr(message, "from_user", None) else message.chat.id
     if not is_authorized(user_id):
         await message.reply_text("⛔ **Access Denied.** You are not authorized to use this bot.")
         return
 
-    # Extract text from current message or replied message
-    target_text = message.text or ""
+    # Extract text from current message or replied message (handles both plain text & media captions)
+    target_text = message.text or message.caption or ""
     if target_text.strip().startswith("/"):
         return
 
-    if message.reply_to_message and message.reply_to_message.text:
-        target_text += "\n" + message.reply_to_message.text
+    if message.reply_to_message:
+        replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+        if replied_text:
+            target_text += "\n" + replied_text
 
     await process_submitted_urls(client, message, target_text, is_album=None)
