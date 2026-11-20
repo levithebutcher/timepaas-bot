@@ -71,6 +71,7 @@ class BatchInfo:
     album_ready_items: list[tuple[Path, str, int]] = field(default_factory=list)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     status_msg_id: int = 0
+    user_msg_id: int = 0
 
 
 def resolve_clean_title(media_info: dict, url: str) -> str:
@@ -123,7 +124,8 @@ class QueueManager:
         user_id: int,
         total_count: int,
         is_album: bool = False,
-        status_msg_id: int = 0
+        status_msg_id: int = 0,
+        user_msg_id: int = 0
     ) -> BatchInfo:
         batch = BatchInfo(
             batch_id=batch_id,
@@ -131,7 +133,8 @@ class QueueManager:
             user_id=user_id,
             total_count=total_count,
             is_album=is_album,
-            status_msg_id=status_msg_id
+            status_msg_id=status_msg_id,
+            user_msg_id=user_msg_id
         )
         self.batches[batch_id] = batch
         return batch
@@ -567,6 +570,17 @@ class QueueManager:
                     remove_path(album_dir)
                     batch.album_ready_items.clear()
 
+            # Auto-delete source link message for single/batch downloads upon 100% success
+            if not batch.is_album:
+                if batch.done_count > 0 and batch.failed_count == 0 and batch.cancelled_count == 0 and batch.user_msg_id:
+                    try:
+                        u_set = await get_user_settings(batch.user_id)
+                        if u_set.get("auto_delete_link", True):
+                            await client.delete_messages(chat_id=batch.chat_id, message_ids=batch.user_msg_id)
+                            batch.user_msg_id = 0
+                    except Exception as de:
+                        logger.debug(f"Could not delete user source message: {de}")
+
             await self._send_batch_summary(client, batch)
 
     async def process_album_pipeline(self, client, batch: BatchInfo, urls: list[str], status_msg_id: int):
@@ -646,28 +660,29 @@ class QueueManager:
                     if batch.cancel_event.is_set():
                         return
 
-                    async with dl_semaphore:
-                        if batch.cancel_event.is_set():
-                            return
+                    album_parts = []
+                    try:
+                        async with dl_semaphore:
+                            if batch.cancel_event.is_set():
+                                return
 
-                        async with dl_lock:
-                            active_dls[item_idx] = {
-                                "file_name": "Resolving stream...",
-                                "current": 0,
-                                "total": 0,
-                                "speed_str": "N/A",
-                                "eta_str": "00:00",
-                                "item_num": item_idx + 1,
-                                "chunk_total": len(chunk_urls)
-                            }
-                            current_dl_info = {
-                                "active_list": list(active_dls.values()),
-                                "completed_in_pack": len(downloaded_items),
-                                "chunk_total": len(chunk_urls)
-                            }
-                        await refresh_dashboard(force=True)
+                            async with dl_lock:
+                                active_dls[item_idx] = {
+                                    "file_name": "Resolving stream...",
+                                    "current": 0,
+                                    "total": 0,
+                                    "speed_str": "N/A",
+                                    "eta_str": "00:00",
+                                    "item_num": item_idx + 1,
+                                    "chunk_total": len(chunk_urls)
+                                }
+                                current_dl_info = {
+                                    "active_list": list(active_dls.values()),
+                                    "completed_in_pack": len(downloaded_items),
+                                    "chunk_total": len(chunk_urls)
+                                }
+                            await refresh_dashboard(force=True)
 
-                        try:
                             # Fast-Fail 45s extraction timeout: prevents dead/unresponsive hosts from freezing the queue
                             try:
                                 media_info = await asyncio.wait_for(extract_media_link(url), timeout=45.0)
@@ -743,95 +758,97 @@ class QueueManager:
                                     dl_file.unlink(missing_ok=True)
                                 album_parts = split_parts
 
-                            chunk_start = sum(len(c) for c in chunks[:chunk_idx])
-                            global_idx = chunk_start + item_idx + 1
-
-                            for part_idx, sub_part in enumerate(album_parts, 1):
-                                if len(album_parts) > 1:
-                                    badge = f"[{global_idx:02d}/{total_files:02d} Part {part_idx}/{len(album_parts)}]"
-                                else:
-                                    badge = f"[{global_idx:02d}/{total_files:02d}]"
-
-                                custom_cap = user_settings.get("custom_caption")
-                                if custom_cap:
-                                    part_caption = f"🎬 `{badge}` {custom_cap}"
-                                else:
-                                    part_caption = f"🎬 `{badge}` `{sub_part.name}`"
-
-                                # Option B (Dump Relay Mode): Upload immediately and clear local disk
-                                if dump_channel:
-                                    try:
-                                        start_up_time = time.time()
-                                        async def dump_progress(curr, tot):
-                                            if batch.cancel_event.is_set():
-                                                raise asyncio.CancelledError()
-                                            nonlocal current_up_info
-                                            now = time.time()
-                                            elapsed = now - start_up_time
-                                            sp_str = "N/A"
-                                            if elapsed > 0 and curr > 0:
-                                                sp = curr / elapsed
-                                                sp_str = f"{format_size(int(sp))}/s"
-                                            current_up_info = {
-                                                "file_name": sub_part.name,
-                                                "current": curr,
-                                                "total": tot,
-                                                "speed_str": sp_str,
-                                                "album_num": chunk_idx + 1,
-                                                "count": len(chunk_urls),
-                                                "status": f"Relaying to Dump [{global_idx}/{total_files}]"
-                                            }
-                                            await refresh_dashboard()
-
-                                        async with dl_lock:
-                                            active_dls.pop(item_idx, None)
-                                            current_dl_info = {
-                                                "active_list": list(active_dls.values()),
-                                                "completed_in_pack": len(downloaded_items),
-                                                "chunk_total": len(chunk_urls)
-                                            }
-                                        await refresh_dashboard(force=True)
-
-                                        dump_info = await upload_single_to_dump(
-                                            client=client,
-                                            dump_chat_id=dump_channel,
-                                            file_path=sub_part,
-                                            caption=part_caption,
-                                            custom_thumb=user_settings.get("custom_thumb"),
-                                            progress_callback=dump_progress
-                                        )
-                                        current_up_info = None
-                                        async with dl_lock:
-                                            downloaded_items.append((dump_info, part_caption, item_idx))
-                                    except Exception as dump_err:
-                                        current_up_info = None
-                                        logger.warning(f"Dump relay failed for {sub_part.name} ({dump_err}), keeping local file...")
-                                        async with dl_lock:
-                                            downloaded_items.append((sub_part, part_caption, item_idx))
-                                else:
-                                    # Option A: Keep local file for double-buffered album batching
-                                    async with dl_lock:
-                                        downloaded_items.append((sub_part, part_caption, item_idx))
-
-                            async with dl_lock:
-                                batch.done_count += 1
-
-                        except asyncio.CancelledError:
-                            batch.cancelled_count += 1
-                        except Exception as e:
-                            logger.error(f"Failed to process {url} in album batch: {e}")
-                            batch.failed_count += 1
-                            batch.failed_urls.append((url, str(e)))
-                        finally:
                             async with dl_lock:
                                 active_dls.pop(item_idx, None)
-                                completed_files += 1
                                 current_dl_info = {
                                     "active_list": list(active_dls.values()),
                                     "completed_in_pack": len(downloaded_items),
                                     "chunk_total": len(chunk_urls)
                                 }
                             await refresh_dashboard(force=True)
+
+                        # --- dl_semaphore is released here! Next download begins immediately ---
+
+                        chunk_start = sum(len(c) for c in chunks[:chunk_idx])
+                        global_idx = chunk_start + item_idx + 1
+
+                        for part_idx, sub_part in enumerate(album_parts, 1):
+                            if len(album_parts) > 1:
+                                badge = f"[{global_idx:02d}/{total_files:02d} Part {part_idx}/{len(album_parts)}]"
+                            else:
+                                badge = f"[{global_idx:02d}/{total_files:02d}]"
+
+                            custom_cap = user_settings.get("custom_caption")
+                            if custom_cap:
+                                part_caption = f"🎬 `{badge}` {custom_cap}"
+                            else:
+                                part_caption = f"🎬 `{badge}` `{sub_part.name}`"
+
+                            # Option B (Dump Relay Mode): Upload immediately and clear local disk
+                            if dump_channel:
+                                try:
+                                    start_up_time = time.time()
+                                    async def dump_progress(curr, tot):
+                                        if batch.cancel_event.is_set():
+                                            raise asyncio.CancelledError()
+                                        nonlocal current_up_info
+                                        now = time.time()
+                                        elapsed = now - start_up_time
+                                        sp_str = "N/A"
+                                        if elapsed > 0 and curr > 0:
+                                            sp = curr / elapsed
+                                            sp_str = f"{format_size(int(sp))}/s"
+                                        current_up_info = {
+                                            "file_name": sub_part.name,
+                                            "current": curr,
+                                            "total": tot,
+                                            "speed_str": sp_str,
+                                            "album_num": chunk_idx + 1,
+                                            "count": len(chunk_urls),
+                                            "status": f"Relaying to Dump [{global_idx}/{total_files}]"
+                                        }
+                                        await refresh_dashboard()
+
+                                    dump_info = await upload_single_to_dump(
+                                        client=client,
+                                        dump_chat_id=dump_channel,
+                                        file_path=sub_part,
+                                        caption=part_caption,
+                                        custom_thumb=user_settings.get("custom_thumb"),
+                                        progress_callback=dump_progress
+                                    )
+                                    current_up_info = None
+                                    async with dl_lock:
+                                        downloaded_items.append((dump_info, part_caption, item_idx))
+                                except Exception as dump_err:
+                                    current_up_info = None
+                                    logger.warning(f"Dump relay failed for {sub_part.name} ({dump_err}), keeping local file...")
+                                    async with dl_lock:
+                                        downloaded_items.append((sub_part, part_caption, item_idx))
+                            else:
+                                # Option A: Keep local file for double-buffered album batching
+                                async with dl_lock:
+                                    downloaded_items.append((sub_part, part_caption, item_idx))
+
+                        async with dl_lock:
+                            batch.done_count += 1
+
+                    except asyncio.CancelledError:
+                        batch.cancelled_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to process {url} in album batch: {e}")
+                        batch.failed_count += 1
+                        batch.failed_urls.append((url, str(e)))
+                    finally:
+                        async with dl_lock:
+                            active_dls.pop(item_idx, None)
+                            completed_files += 1
+                            current_dl_info = {
+                                "active_list": list(active_dls.values()),
+                                "completed_in_pack": len(downloaded_items),
+                                "chunk_total": len(chunk_urls)
+                            }
+                        await refresh_dashboard(force=True)
 
                 await asyncio.gather(*(process_item(i, u) for i, u in enumerate(chunk_urls)))
 
@@ -934,6 +951,16 @@ class QueueManager:
                     await client.delete_messages(chat_id=batch.chat_id, message_ids=status_msg_id)
                 except Exception:
                     pass
+
+                # Auto-delete user link message for album upon 100% success
+                if batch.done_count > 0 and batch.failed_count == 0 and batch.cancelled_count == 0 and batch.user_msg_id:
+                    try:
+                        u_set = await get_user_settings(batch.user_id)
+                        if u_set.get("auto_delete_link", True):
+                            await client.delete_messages(chat_id=batch.chat_id, message_ids=batch.user_msg_id)
+                            batch.user_msg_id = 0
+                    except Exception as de:
+                        logger.debug(f"Could not delete user album source message: {de}")
 
             await self._send_batch_summary(client, batch)
 

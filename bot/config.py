@@ -39,7 +39,7 @@ MAX_USER_TASKS = int(os.getenv("MAX_USER_TASKS", "30"))
 PROGRESS_UPDATE_INTERVAL = float(os.getenv("PROGRESS_UPDATE_INTERVAL", "3.0"))
 MIN_FREE_DISK_GB = float(os.getenv("MIN_FREE_DISK_GB", "3.0"))
 ARIA2_CONNECTIONS = int(os.getenv("ARIA2_CONNECTIONS", "16"))
-ALBUM_CONCURRENT_DOWNLOADS = int(os.getenv("ALBUM_CONCURRENT_DOWNLOADS", "4"))
+ALBUM_CONCURRENT_DOWNLOADS = int(os.getenv("ALBUM_CONCURRENT_DOWNLOADS", "6"))
 
 # Optional Cookies File for yt-dlp (Instagram, restricted YouTube, TikTok, X)
 COOKIES_FILE = None

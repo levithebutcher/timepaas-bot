@@ -11,9 +11,15 @@ async def init_db():
                 user_id INTEGER PRIMARY KEY,
                 custom_thumb TEXT,
                 custom_caption TEXT,
-                auto_extract_zip INTEGER DEFAULT 1
+                auto_extract_zip INTEGER DEFAULT 1,
+                auto_delete_link INTEGER DEFAULT 1
             )
         """)
+        # Backward-compatible schema migration
+        try:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN auto_delete_link INTEGER DEFAULT 1")
+        except Exception:
+            pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS bot_settings (
                 key TEXT PRIMARY KEY,
@@ -38,7 +44,7 @@ async def get_user_settings(user_id: int):
     """Retrieve settings for a user."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         async with db.execute(
-            "SELECT custom_thumb, custom_caption, auto_extract_zip FROM user_settings WHERE user_id = ?",
+            "SELECT custom_thumb, custom_caption, auto_extract_zip, auto_delete_link FROM user_settings WHERE user_id = ?",
             (user_id,)
         ) as cursor:
             row = await cursor.fetchone()
@@ -46,13 +52,26 @@ async def get_user_settings(user_id: int):
                 return {
                     "custom_thumb": row[0],
                     "custom_caption": row[1],
-                    "auto_extract_zip": bool(row[2])
+                    "auto_extract_zip": bool(row[2]),
+                    "auto_delete_link": bool(row[3]) if len(row) > 3 and row[3] is not None else True
                 }
             return {
                 "custom_thumb": None,
                 "custom_caption": None,
-                "auto_extract_zip": True
+                "auto_extract_zip": True,
+                "auto_delete_link": True
             }
+
+
+async def set_user_auto_delete_link(user_id: int, enabled: bool):
+    """Update or toggle user auto-delete link setting."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+            INSERT INTO user_settings (user_id, auto_delete_link)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET auto_delete_link = excluded.auto_delete_link
+        """, (user_id, 1 if enabled else 0))
+        await db.commit()
 
 
 async def set_user_thumb(user_id: int, thumb_path: str):

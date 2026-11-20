@@ -74,7 +74,7 @@ STREAMFILES_DOMAINS = {
 
 VIDARA_DOMAINS = {
     "vidara.to", "vidara.so", "vidara.net", "vidara.org",
-    "gasobni.com"
+    "gasobni.com", "vidara.cc", "vidara.click", "vidara.xyz", "vidara.live", "vidara.co"
 }
 
 FILEMOON_DOMAINS = {
@@ -953,7 +953,7 @@ async def resolve_streamfiles(url: str) -> dict:
 async def resolve_vidara(url: str) -> dict:
     """
     Tier-0 Fast Resolver for Vidara.to / Gasobni video streams.
-    Directly queries the internal /api/stream endpoint in ~0.05s, completely bypassing headless browser.
+    Directly queries internal /api/stream endpoint and falls back to fast embed HTML parsing.
     """
     try:
         parsed = urlparse(url)
@@ -968,13 +968,14 @@ async def resolve_vidara(url: str) -> dict:
         candidate_domains = []
         if parsed.netloc:
             candidate_domains.append(parsed.netloc)
-        for d in ("gasobni.com", "vidara.to", "vidara.so"):
+        for d in ("vidara.to", "gasobni.com", "vidara.so", "vidara.net"):
             if d not in candidate_domains:
                 candidate_domains.append(d)
 
         payload = {"filecode": filecode}
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8.0)) as session:
+        # Step 1: Internal API query (super fast: ~0.1s)
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0, connect=3.0)) as session:
             for domain in candidate_domains:
                 try:
                     api_url = f"https://{domain}/api/stream"
@@ -1005,6 +1006,34 @@ async def resolve_vidara(url: str) -> dict:
                                 }
                 except Exception as de:
                     logger.debug(f"Vidara API attempt failed for {domain}: {de}")
+
+            # Step 2: Direct Embed HTML fallback (bypasses headless browser)
+            for domain in candidate_domains:
+                try:
+                    embed_url = f"https://{domain}/e/{filecode}"
+                    headers = {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                        "Referer": f"https://{domain}/"
+                    }
+                    async with session.get(embed_url, headers=headers, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
+                        if resp.status == 200:
+                            html = await resp.text()
+                            m3u8_match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', html)
+                            if m3u8_match:
+                                stream_url = m3u8_match.group(1)
+                                logger.info(f"Vidara stream resolved via {domain} embed HTML: {filecode}")
+                                return {
+                                    "type": "m3u8",
+                                    "url": stream_url,
+                                    "title": f"{filecode}.mp4",
+                                    "headers": {
+                                        "User-Agent": DEFAULT_USER_AGENT,
+                                        "Referer": f"https://{domain}/"
+                                    }
+                                }
+                except Exception as he:
+                    logger.debug(f"Vidara HTML embed fallback failed for {domain}: {he}")
+
     except Exception as e:
         logger.debug(f"Vidara fast extraction failed for {url}: {e}")
     return None

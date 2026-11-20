@@ -709,6 +709,168 @@ class TestComponents(unittest.TestCase):
         if tmp_path.exists():
             tmp_path.unlink()
 
+    def test_auto_delete_link_database_and_command(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from bot.database import get_user_settings, set_user_auto_delete_link, init_db
+        from bot.handlers.commands import autodelete_handler
+
+        async def run_test():
+            await init_db()
+            test_user = 987654321
+
+            # Default is True
+            settings = await get_user_settings(test_user)
+            self.assertTrue(settings.get("auto_delete_link"))
+
+            # Disable
+            await set_user_auto_delete_link(test_user, False)
+            settings = await get_user_settings(test_user)
+            self.assertFalse(settings.get("auto_delete_link"))
+
+            # Re-enable
+            await set_user_auto_delete_link(test_user, True)
+            settings = await get_user_settings(test_user)
+            self.assertTrue(settings.get("auto_delete_link"))
+
+            # Test command handler toggle
+            client = MagicMock()
+            msg = MagicMock()
+            msg.from_user.id = test_user
+            msg.text = "/autodelete"
+            msg.caption = None
+            msg.reply_text = AsyncMock()
+
+            with patch("bot.handlers.commands.is_authorized", return_value=True):
+                await autodelete_handler(client, msg)
+                # Toggled from True to False
+                settings = await get_user_settings(test_user)
+                self.assertFalse(settings.get("auto_delete_link"))
+
+                # Command /autodelete on
+                msg.text = "/autodelete on"
+                await autodelete_handler(client, msg)
+                settings = await get_user_settings(test_user)
+                self.assertTrue(settings.get("auto_delete_link"))
+
+        asyncio.run(run_test())
+
+    def test_auto_delete_user_message_on_success_and_failure(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from bot.core.queue_manager import queue_manager, DownloadTask
+
+        async def run_test():
+            client = MagicMock()
+            client.delete_messages = AsyncMock()
+            client.edit_message_text = AsyncMock()
+            client.send_message = AsyncMock()
+
+            user_id = 11223344
+            batch_id = "test_batch_autodel"
+            user_msg_id = 556677
+
+            # 1. Success case: All tasks in batch finish with 'Done'
+            batch = queue_manager.register_batch(
+                batch_id=batch_id,
+                chat_id=user_id,
+                user_id=user_id,
+                total_count=1,
+                is_album=False,
+                user_msg_id=user_msg_id
+            )
+
+            task = DownloadTask(
+                id="task_success_1",
+                user_id=user_id,
+                chat_id=user_id,
+                url="https://site.com/video.mp4",
+                status_msg_id=9991,
+                batch_id=batch_id
+            )
+            queue_manager.tasks[task.id] = task
+
+            with patch("bot.core.queue_manager.get_user_settings", return_value={"auto_delete_link": True}):
+                await queue_manager._handle_task_completion(client, task, "Done")
+
+                # Verify user message was deleted!
+                client.delete_messages.assert_any_call(chat_id=user_id, message_ids=user_msg_id)
+
+            # 2. Failure case: Task fails, user message must NOT be deleted
+            client.delete_messages.reset_mock()
+            fail_batch_id = "test_batch_fail"
+            fail_user_msg_id = 998877
+
+            batch_fail = queue_manager.register_batch(
+                batch_id=fail_batch_id,
+                chat_id=user_id,
+                user_id=user_id,
+                total_count=1,
+                is_album=False,
+                user_msg_id=fail_user_msg_id
+            )
+
+            task_fail = DownloadTask(
+                id="task_fail_1",
+                user_id=user_id,
+                chat_id=user_id,
+                url="https://site.com/broken.mp4",
+                status_msg_id=9992,
+                batch_id=fail_batch_id
+            )
+            queue_manager.tasks[task_fail.id] = task_fail
+
+            with patch("bot.core.queue_manager.get_user_settings", return_value={"auto_delete_link": True}):
+                await queue_manager._handle_task_completion(client, task_fail, "Failed")
+
+                # Ensure delete_messages was NOT called for user message
+                deleted_ids = []
+                for call in client.delete_messages.call_args_list:
+                    deleted_ids.append(call[1].get("message_ids"))
+                self.assertNotIn(fail_user_msg_id, deleted_ids)
+
+        asyncio.run(run_test())
+
+    def test_vidara_domains_and_embed_fallback(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from bot.extractors.video_hosts import VIDARA_DOMAINS, resolve_vidara
+
+        # Verify expanded domains
+        self.assertIn("vidara.to", VIDARA_DOMAINS)
+        self.assertIn("gasobni.com", VIDARA_DOMAINS)
+        self.assertIn("vidara.so", VIDARA_DOMAINS)
+        self.assertIn("vidara.net", VIDARA_DOMAINS)
+
+        # Test embed HTML fallback when /api/stream is unavailable
+        async def run_test():
+            fake_html = '<html><script>var src = "https://cdn.vidara.to/hls/12345/master.m3u8";</script></html>'
+            
+            class FakeResp:
+                def __init__(self, status, text_val):
+                    self.status = status
+                    self._text = text_val
+                async def text(self): return self._text
+                async def json(self): return {}
+                async def __aenter__(self): return self
+                async def __aexit__(self, *args): pass
+
+            class FakeSession:
+                def post(self, url, **kwargs):
+                    return FakeResp(503, "")
+                def get(self, url, **kwargs):
+                    return FakeResp(200, fake_html)
+                async def __aenter__(self): return self
+                async def __aexit__(self, *args): pass
+
+            with patch("aiohttp.ClientSession", return_value=FakeSession()):
+                res = await resolve_vidara("https://vidara.to/v/abc123xyz")
+                self.assertIsNotNone(res)
+                self.assertEqual(res["type"], "m3u8")
+                self.assertIn("master.m3u8", res["url"])
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()

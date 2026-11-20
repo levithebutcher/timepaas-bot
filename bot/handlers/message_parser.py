@@ -112,7 +112,8 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
             user_id=user_id,
             total_count=len(clean_urls),
             is_album=True,
-            status_msg_id=status_msg.id
+            status_msg_id=status_msg.id,
+            user_msg_id=getattr(message, "id", 0)
         )
 
         asyncio.create_task(
@@ -132,7 +133,8 @@ async def process_submitted_urls(client: Client, message: Message, target_text: 
         chat_id=message.chat.id,
         user_id=user_id,
         total_count=len(clean_urls),
-        is_album=False
+        is_album=False,
+        user_msg_id=getattr(message, "id", 0)
     )
 
     ack_msg = await message.reply_text(

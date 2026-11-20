@@ -25,6 +25,7 @@ from bot.database import (
     clear_user_thumb,
     set_user_caption,
     get_user_settings,
+    set_user_auto_delete_link,
     get_dump_channel,
     set_dump_channel
 )
@@ -76,6 +77,7 @@ async def help_handler(client: Client, message: Message):
         "• <code>/setthumb</code> — Reply to image to set thumbnail\n"
         "• <code>/clearthumb</code> — Reset thumbnail\n"
         "• <code>/setcaption &lt;text&gt;</code> — Set custom caption\n"
+        "• <code>/autodelete [on/off]</code> — Auto-delete user link message on success\n"
         "• <code>/setdump &lt;id&gt;</code> — Configure Dump Channel (Option B Relay)\n"
         "• <code>/cleardump</code> — Clear Dump Channel\n"
         "• <code>/dump</code> — View Dump Channel status"
@@ -190,6 +192,45 @@ async def setcaption_handler(client: Client, message: Message):
     caption = parts[1].strip()
     await set_user_caption(message.from_user.id, caption)
     await message.reply_text(f"✅ **Custom caption template saved:**\n`{caption}`")
+
+
+@Client.on_message(filters.command(["autodelete", "dellink", "autodel"]) & filters.private)
+async def autodelete_handler(client: Client, message: Message):
+    if not is_authorized(message.from_user.id):
+        return
+
+    raw_text = message.text or message.caption or ""
+    parts = raw_text.split(maxsplit=1)
+    user_settings = await get_user_settings(message.from_user.id)
+    current = user_settings.get("auto_delete_link", True)
+
+    if len(parts) > 1:
+        arg = parts[1].strip().lower()
+        if arg in ("on", "true", "enable", "yes", "1"):
+            new_val = True
+        elif arg in ("off", "false", "disable", "no", "0"):
+            new_val = False
+        else:
+            await message.reply_text("⚠️ Usage: `/autodelete on` or `/autodelete off` or `/autodelete` (to toggle).")
+            return
+    else:
+        new_val = not current
+
+    await set_user_auto_delete_link(message.from_user.id, new_val)
+    status_str = (
+        "🟢 <b>ENABLED (Default)</b>\n"
+        "<i>User link messages will be automatically deleted upon successful delivery.</i>"
+    ) if new_val else (
+        "🔴 <b>DISABLED</b>\n"
+        "<i>User link messages will be kept in chat.</i>"
+    )
+    await message.reply_text(
+        f"<blockquote>"
+        f"🗑️ <b>AUTO-DELETE LINK SETTING</b>\n\n"
+        f"• <b>Status:</b> {status_str}\n\n"
+        f"<i>Note: If a task fails, the link is never deleted so you can retry.</i>"
+        f"</blockquote>"
+    )
 
 
 async def resolve_dump_chat(client: Client, raw_input: str = "", reply_to: Message = None):
