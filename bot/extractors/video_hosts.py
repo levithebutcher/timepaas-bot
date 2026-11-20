@@ -687,16 +687,27 @@ def _parse_luluvid_content(html: str) -> tuple:
     return None, "direct", title
 
 
-async def _fetch_stealth_text(url: str, headers: dict) -> str:
-    """Uses curl_cffi with Chrome TLS impersonation to bypass Cloudflare anti-bot blocks."""
-    try:
-        from curl_cffi.requests import AsyncSession
-        async with AsyncSession(impersonate="chrome124", timeout=12) as session:
-            resp = await session.get(url, headers=headers)
-            if resp.status_code == 200 and resp.text:
-                return resp.text
-    except Exception as e:
-        logger.debug(f"curl_cffi fetch failed for {url}: {e}")
+async def _fetch_stealth_text(url: str, headers: dict, retries: int = 3) -> str:
+    """Uses curl_cffi with Chrome TLS impersonation and auto-retry backoff to bypass Cloudflare rate-limits."""
+    from curl_cffi.requests import AsyncSession
+    for attempt in range(1, retries + 1):
+        try:
+            async with AsyncSession(impersonate="chrome124", timeout=15) as session:
+                resp = await session.get(url, headers=headers)
+                if resp.status_code == 200 and resp.text:
+                    return resp.text
+                elif resp.status_code in (429, 502, 503, 504, 520, 521, 522):
+                    if attempt < retries:
+                        wait_sec = 1.5 * attempt
+                        logger.warning(
+                            f"Host {url} returned HTTP {resp.status_code}. Throttled by CDN; retrying in {wait_sec:.1f}s (attempt {attempt}/{retries})..."
+                        )
+                        await asyncio.sleep(wait_sec)
+        except Exception as e:
+            if attempt < retries:
+                await asyncio.sleep(1.0 * attempt)
+            else:
+                logger.debug(f"curl_cffi fetch failed for {url}: {e}")
     return ""
 
 
