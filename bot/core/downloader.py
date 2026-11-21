@@ -365,6 +365,44 @@ async def download_direct_stream(
     return target_path
 
 
+_FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS = None
+_FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS = None
+
+
+def _ffmpeg_supports_allowed_segment_extensions() -> bool:
+    """Checks whether the installed ffmpeg supports -allowed_segment_extensions (FFmpeg 7.0+)."""
+    global _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS
+    if _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS is None:
+        try:
+            import subprocess
+            out = subprocess.check_output(
+                ["ffmpeg", "-h", "demuxer=hls"],
+                stderr=subprocess.STDOUT,
+                timeout=5
+            ).decode("utf-8", errors="ignore")
+            _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS = "allowed_segment_extensions" in out
+        except Exception:
+            _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS = False
+    return _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS
+
+
+def _ffmpeg_supports_allowed_extensions() -> bool:
+    """Checks whether the installed ffmpeg supports -allowed_extensions."""
+    global _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS
+    if _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS is None:
+        try:
+            import subprocess
+            out = subprocess.check_output(
+                ["ffmpeg", "-h", "demuxer=hls"],
+                stderr=subprocess.STDOUT,
+                timeout=5
+            ).decode("utf-8", errors="ignore")
+            _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS = "allowed_extensions" in out
+        except Exception:
+            _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS = False
+    return _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS
+
+
 async def _download_m3u8_via_curl_cffi(
     m3u8_url: str,
     target_path: Path,
@@ -486,8 +524,7 @@ async def _download_m3u8_via_curl_cffi(
             # Local remux with FFmpeg (offline, zero network)
             remux_cmd = [
                 "ffmpeg", "-y",
-                "-allowed_segment_extensions", "ALL",
-                "-allowed_extensions", "ALL",
+                "-protocol_whitelist", "file,crypto,data",
                 "-i", str(local_m3u8),
                 "-c", "copy",
                 "-movflags", "+faststart",
@@ -496,9 +533,13 @@ async def _download_m3u8_via_curl_cffi(
             proc = await asyncio.create_subprocess_exec(
                 *remux_cmd,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL
+                stderr=asyncio.subprocess.PIPE
             )
-            await proc.communicate()
+            _, remux_err = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    f"FFmpeg local remux failed (code {proc.returncode}): {remux_err.decode('utf-8', errors='ignore')[-300:]}"
+                )
             return target_path.exists() and target_path.stat().st_size > 0
 
     except asyncio.CancelledError:
@@ -511,7 +552,7 @@ async def _download_m3u8_via_curl_cffi(
 
 
 async def _download_m3u8_via_ytdlp(m3u8_url: str, target_path: Path, headers: dict) -> bool:
-    """Fallback HLS/M3U8 downloader using yt-dlp when FFmpeg fails."""
+    """Fallback HLS/M3U8 downloader using yt-dlp in turbo parallel fragment mode when FFmpeg fails."""
     def _sync_dl():
         import yt_dlp
         ydl_opts = {
@@ -521,6 +562,11 @@ async def _download_m3u8_via_ytdlp(m3u8_url: str, target_path: Path, headers: di
             "format": "best",
             "nocheckcertificate": True,
             "http_headers": headers or {},
+            "concurrent_fragment_downloads": 16,
+            "retries": 10,
+            "fragment_retries": 10,
+            "buffersize": 1024 * 1024,
+            "http_chunk_size": 10485760,
             "extractor_args": {
                 "generic": {"impersonate": ["chrome"]}
             }
@@ -564,9 +610,9 @@ async def download_m3u8_stream(
             header_lines.append(f"{k}: {v}")
     header_str = "\r\n".join(header_lines) + "\r\n"
 
-    # For CDNs known to enforce browser TLS fingerprints (e.g. *.tnmr.org / Lulu CDN),
+    # For CDNs known to enforce browser TLS fingerprints (e.g. *.tnmr.org / Lulu CDN, streambucket, mystor),
     # use curl_cffi with Chrome impersonation directly to bypass 403 blocking without delay.
-    if any(cdn in m3u8_url for cdn in ("tnmr.org",)):
+    if any(cdn in m3u8_url for cdn in ("tnmr.org", "streambucket", "mystor")):
         logger.info(f"Target HLS stream uses Cloudflare TLS fingerprinting ({m3u8_url[:50]}...). Using curl_cffi downloader directly.")
         curl_success = await _download_m3u8_via_curl_cffi(
             m3u8_url, target_path, clean_headers, progress_callback, cancel_event
@@ -575,11 +621,16 @@ async def download_m3u8_stream(
             logger.info(f"HLS stream successfully downloaded via direct curl_cffi: {target_path.name}")
             return target_path
 
+    extra_hls_opts = ["-protocol_whitelist", "file,http,https,tcp,tls,crypto,data"]
+    if _ffmpeg_supports_allowed_extensions():
+        extra_hls_opts.extend(["-allowed_extensions", "ALL"])
+    if _ffmpeg_supports_allowed_segment_extensions():
+        extra_hls_opts.extend(["-allowed_segment_extensions", "ALL"])
+
     cmd = [
         "ffmpeg",
         "-y",
-        "-allowed_segment_extensions", "ALL",
-        "-allowed_extensions", "ALL",
+        *extra_hls_opts,
         "-http_persistent", "1",
         "-http_multiple", "1",
         "-timeout", "15000000",

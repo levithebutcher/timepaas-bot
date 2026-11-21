@@ -871,6 +871,41 @@ class TestComponents(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_canonical_url_key_and_deduplication(self):
+        from bot.handlers.message_parser import get_canonical_url_key
+
+        # Streamtape canonical key
+        st_full = "https://streamtape.com/v/7Rk2p78o0gcA67O/1795259034131.mp4"
+        st_trunc = "https://streamtape.com/v/7Rk2p78o0gcA67O/17952590341"
+        self.assertEqual(get_canonical_url_key(st_full), get_canonical_url_key(st_trunc))
+        self.assertEqual(get_canonical_url_key(st_full), "streamtape:7Rk2p78o0gcA67O")
+
+        # Uqload canonical key
+        uq1 = "https://uqload.vc/embed-db0c1stux4di.html"
+        uq2 = "https://uqload.vc/db0c1stux4di.html"
+        self.assertEqual(get_canonical_url_key(uq1), get_canonical_url_key(uq2))
+
+        # Abstream canonical key
+        ab1 = "https://abstream.to/embed-fa3tsvwh1fi7.html"
+        ab2 = "https://abstream.to/fa3tsvwh1fi7.html"
+        self.assertEqual(get_canonical_url_key(ab1), get_canonical_url_key(ab2))
+
+        # Vidara canonical key
+        v1 = "https://vidara.to/135de79035ac"
+        v2 = "https://vidara.to/v/135de79035ac"
+        self.assertEqual(get_canonical_url_key(v1), get_canonical_url_key(v2))
+
+    def test_ffmpeg_feature_detection_and_hls_options(self):
+        from bot.core.downloader import (
+            _ffmpeg_supports_allowed_segment_extensions,
+            _ffmpeg_supports_allowed_extensions
+        )
+        # Should execute without throwing any exception and return bools
+        seg_ext = _ffmpeg_supports_allowed_segment_extensions()
+        self.assertIsInstance(seg_ext, bool)
+        ext = _ffmpeg_supports_allowed_extensions()
+        self.assertIsInstance(ext, bool)
+
 
 if __name__ == "__main__":
     unittest.main()

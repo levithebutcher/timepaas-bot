@@ -420,6 +420,8 @@ async def upload_single_to_dump(
                 # CRITICAL: Only delete local video file once upload actually succeeded!
                 if sent is not None:
                     remove_path(file_path)
+                    # Gentle pacing between successive dump relay uploads to prevent Telegram FloodWait
+                    await asyncio.sleep(1.0)
 
     if not sent:
         raise RuntimeError(f"Failed to upload {file_path.name} to dump channel after {max_retries} attempts.")

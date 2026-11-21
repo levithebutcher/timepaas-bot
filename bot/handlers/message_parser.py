@@ -3,6 +3,7 @@ import uuid
 import asyncio
 import logging
 import html
+from urllib.parse import urlparse
 try:
     from pyrogram import Client, filters
     from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -36,23 +37,80 @@ logger = logging.getLogger(__name__)
 URL_REGEX = re.compile(r"(https?://[^\s<>\"']+|www\.[^\s<>\"']+)", re.IGNORECASE)
 
 
+def get_canonical_url_key(url: str) -> str:
+    """Computes a normalized key for video URLs to deduplicate identical videos/truncated links."""
+    u_clean = url.strip()
+    parsed = urlparse(u_clean)
+    netloc = parsed.netloc.lower().split(":")[0]
+    path = parsed.path
+    # Streamtape (e.g. /v/file_id/...)
+    if "streamtape" in netloc or "strtape" in netloc or "watchadsontape" in netloc:
+        m = re.search(r"/v/([a-zA-Z0-9]+)", path)
+        if m:
+            return f"streamtape:{m.group(1)}"
+    # Uqload (e.g. /embed-file_id.html or /file_id.html)
+    if "uqload" in netloc:
+        m = re.search(r"(?:embed-)?([a-zA-Z0-9]+)", path)
+        if m:
+            return f"uqload:{m.group(1)}"
+    # Abstream (e.g. /embed-file_id.html or /file_id.html)
+    if "abstream" in netloc:
+        m = re.search(r"(?:embed-)?([a-zA-Z0-9]+)", path)
+        if m:
+            return f"abstream:{m.group(1)}"
+    # Vidara / Gasobni (e.g. /file_id)
+    if "vidara" in netloc or "gasobni" in netloc:
+        parts = [p for p in path.split("/") if p and p not in ("v", "e", "embed", "download")]
+        if parts:
+            return f"vidara:{parts[0]}"
+    # Mixdrop (e.g. /e/file_id or /f/file_id)
+    if any(k in netloc for k in ("mixdrop", "mdzsmutpcvykb", "mxcontent")):
+        m = re.search(r"/(?:e|f)/([a-zA-Z0-9]+)", path)
+        if m:
+            return f"mixdrop:{m.group(1)}"
+    # Streamcash (e.g. /embed/file_id)
+    if "streamcash" in netloc:
+        m = re.search(r"/(?:embed/)?([a-zA-Z0-9\-]+)", path)
+        if m:
+            return f"streamcash:{m.group(1)}"
+    # Livecamrips (e.g. /video/video_id)
+    if "livecamrips" in netloc:
+        m = re.search(r"/video/([a-zA-Z0-9]+)", path)
+        if m:
+            return f"livecamrips:{m.group(1)}"
+    # LuluStream / LuluVid (e.g. /file_id or /e/file_id)
+    if any(k in netloc for k in ("luluvdo", "luluvideo", "lulustream", "luluvid", "lplaygo")):
+        parts = [p for p in path.split("/") if p and p not in ("v", "e", "embed", "d")]
+        if parts:
+            file_id = parts[0].rsplit(".", 1)[0]
+            return f"lulustream:{file_id}"
+    return u_clean
+
+
 async def process_submitted_urls(client: Client, message: Message, target_text: str, is_album: bool = None):
     """Processes URL extraction, queue limit checking, and enqueuing tasks."""
     user_id = message.from_user.id if getattr(message, "from_user", None) else message.chat.id
 
-    # Find all valid URLs
+    # Find all valid URLs and deduplicate truncated duplicates by canonical file ID
     raw_urls = URL_REGEX.findall(target_text)
-    clean_urls = []
-    seen = set()
+    best_urls_by_key = {}
+    key_order = []
 
     for u in raw_urls:
         if isinstance(u, tuple):
             u = u[0]
         if not u.startswith(("http://", "https://")):
             u = "http://" + u
-        if u not in seen:
-            seen.add(u)
-            clean_urls.append(u)
+        ck = get_canonical_url_key(u)
+        if ck not in best_urls_by_key:
+            best_urls_by_key[ck] = u
+            key_order.append(ck)
+        else:
+            # Keep the longer, more complete URL (with filename/extension)
+            if len(u) > len(best_urls_by_key[ck]):
+                best_urls_by_key[ck] = u
+
+    clean_urls = [best_urls_by_key[k] for k in key_order]
 
     if not clean_urls:
         return

@@ -688,26 +688,43 @@ def _parse_luluvid_content(html: str) -> tuple:
 
 
 async def _fetch_stealth_text(url: str, headers: dict, retries: int = 3) -> str:
-    """Uses curl_cffi with Chrome TLS impersonation and auto-retry backoff to bypass Cloudflare rate-limits."""
+    """Uses curl_cffi with rotating browser TLS impersonations and backoff to bypass Cloudflare rate-limits."""
     from curl_cffi.requests import AsyncSession
+    profiles = ["chrome124", "chrome120", "safari15_5"]
+    req_headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1"
+    }
+    if headers:
+        req_headers.update(headers)
+
     for attempt in range(1, retries + 1):
+        profile = profiles[(attempt - 1) % len(profiles)]
         try:
-            async with AsyncSession(impersonate="chrome124", timeout=15) as session:
-                resp = await session.get(url, headers=headers)
+            async with AsyncSession(impersonate=profile, timeout=15) as session:
+                resp = await session.get(url, headers=req_headers)
                 if resp.status_code == 200 and resp.text:
                     return resp.text
-                elif resp.status_code in (429, 502, 503, 504, 520, 521, 522):
+                elif resp.status_code in (403, 429, 502, 503, 504, 520, 521, 522):
                     if attempt < retries:
                         wait_sec = 1.5 * attempt
                         logger.warning(
-                            f"Host {url} returned HTTP {resp.status_code}. Throttled by CDN; retrying in {wait_sec:.1f}s (attempt {attempt}/{retries})..."
+                            f"Host {url} returned HTTP {resp.status_code} on {profile}. Retrying in {wait_sec:.1f}s (attempt {attempt}/{retries})..."
                         )
                         await asyncio.sleep(wait_sec)
         except Exception as e:
             if attempt < retries:
                 await asyncio.sleep(1.0 * attempt)
             else:
-                logger.debug(f"curl_cffi fetch failed for {url}: {e}")
+                logger.debug(f"curl_cffi fetch failed for {url} ({profile}): {e}")
     return ""
 
 
@@ -1620,8 +1637,24 @@ async def resolve_livecamrips(url: str) -> dict:
     Fetches the video page, extracts clean page title, locates embedded player iframe,
     and resolves the underlying video stream directly in < 0.3s.
     """
-    headers = {"User-Agent": DEFAULT_USER_AGENT}
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://livecamrips.to/"
+    }
     html = await _fetch_stealth_text(url, headers)
+    if not html:
+        try:
+            from curl_cffi import requests as cffi_requests
+            def _sync_fetch():
+                with cffi_requests.Session(impersonate="chrome124") as s:
+                    r = s.get(url, headers=headers, timeout=12)
+                    return r.text if r.status_code == 200 else ""
+            html = await asyncio.to_thread(_sync_fetch)
+        except Exception:
+            pass
+
     if not html:
         try:
             async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as session:
@@ -1632,7 +1665,13 @@ async def resolve_livecamrips(url: str) -> dict:
             pass
 
     if not html:
-        return None
+        logger.info(f"Livecamrips static fetch empty or blocked; falling back directly to Playwright: {url}")
+        try:
+            from bot.extractors.browser_ext import extract_with_playwright
+            return await extract_with_playwright(url)
+        except Exception as e:
+            logger.debug(f"Livecamrips Playwright fallback failed: {e}")
+            return None
 
     # Clean title extraction
     t_match = re.search(r"<title>(.*?)</title>", html, re.I)
@@ -1645,7 +1684,7 @@ async def resolve_livecamrips(url: str) -> dict:
             title = clean_t if clean_t.lower().endswith(".mp4") else f"{clean_t}.mp4"
 
     # Search for embedded player iframe
-    iframe_match = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
+    iframe_match = re.search(r'<iframe[^>]+(?:src|data-src)=["\']([^"\']+)["\']', html, re.I)
     if iframe_match:
         iframe_url = iframe_match.group(1).strip()
         if iframe_url.startswith("//"):

@@ -199,20 +199,63 @@ async def extract_with_playwright(url: str, timeout_seconds: int = 25) -> dict:
 
             # Dismiss 18+ age verification or warning overlays if present
             try:
-                verification = await page.query_selector("#verification, .verification, #age-gate, .age-gate")
-                if verification:
-                    btn = await verification.query_selector("button, a.btn, .btn")
-                    if btn:
-                        await btn.click(timeout=1500)
-                        await asyncio.sleep(0.5)
+                age_selectors = [
+                    "button.age-gate-confirm",
+                    ".age-gate-confirm",
+                    "#verification button",
+                    ".verification button",
+                    "#age-gate button",
+                    ".age-gate button",
+                    "#verification",
+                    ".verification",
+                    "#age-gate",
+                    ".age-gate",
+                    "button:has-text('18')",
+                    "button:has-text('I am 18')",
+                    "button:has-text('Enter')",
+                    "button:has-text('Agree')",
+                    "button:has-text('Accept')",
+                    "button:has-text('Confirm')",
+                    "a:has-text('I am 18')",
+                    "a:has-text('Enter')",
+                ]
+                for a_sel in age_selectors:
+                    try:
+                        elem = await page.query_selector(a_sel)
+                        if elem:
+                            btn = await elem.query_selector("button, a.btn, .btn") if elem.tag_name not in ("button", "a") else elem
+                            if btn:
+                                await btn.click(timeout=1500)
+                                await asyncio.sleep(1.0)
+                                logger.info(f"Playwright dismissed age verification overlay via {a_sel}")
+                                break
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
             # Check for embedded iframes pointing to video hosts
             try:
-                iframes = await page.eval_on_selector_all("iframe", "els => els.map(e => e.src)")
+                # 1. Check all frames in Playwright context
+                for frame in page.frames:
+                    try:
+                        f_url = frame.url
+                        if f_url and f_url != "about:blank" and not f_url.startswith("chrome"):
+                            from bot.extractors.video_hosts import extract_from_video_hosts
+                            f_res = await extract_from_video_hosts(f_url)
+                            if f_res and f_res.get("url"):
+                                logger.info(f"Playwright detected embedded video host frame: {f_url}")
+                                await browser.close()
+                                return f_res
+                    except Exception:
+                        pass
+
+                # 2. Check DOM iframe elements
+                iframes = await page.eval_on_selector_all("iframe", "els => els.map(e => e.src || e.getAttribute('data-src'))")
                 for ifr_src in iframes:
                     if ifr_src:
+                        if ifr_src.startswith("//"):
+                            ifr_src = "https:" + ifr_src
                         from bot.extractors.video_hosts import extract_from_video_hosts
                         host_res = await extract_from_video_hosts(ifr_src)
                         if host_res and host_res.get("url"):
