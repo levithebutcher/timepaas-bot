@@ -12,7 +12,10 @@ if sys.platform != "win32":
         pass
 
 from pyrogram import Client, enums
-from bot.config import API_ID, API_HASH, BOT_TOKEN, STREAMTAPE_LOGIN, STREAMTAPE_KEY
+from bot.config import (
+    API_ID, API_HASH, BOT_TOKEN, SESSION_STRING,
+    STREAMTAPE_LOGIN, STREAMTAPE_KEY, ROOT_DIR
+)
 from bot.core.cleaner import clean_temp_directories
 from bot.core.queue_manager import queue_manager
 from bot.database import init_db, set_dump_channel, get_dump_channel
@@ -30,20 +33,35 @@ logger = logging.getLogger("TimepassBot")
 
 def create_bot_client() -> Client:
     """Instantiates and registers handlers with Pyrogram Client."""
-    if not API_ID or not API_HASH or not BOT_TOKEN:
-        logger.critical("Missing API_ID, API_HASH, or BOT_TOKEN in .env configuration!")
+    if not API_ID or not API_HASH:
+        logger.critical("Missing API_ID or API_HASH in .env configuration!")
         sys.exit(1)
 
-    app = Client(
+    if not SESSION_STRING and not BOT_TOKEN:
+        logger.critical("Missing both SESSION_STRING and BOT_TOKEN in .env configuration!")
+        sys.exit(1)
+
+    client_kwargs = dict(
         name="timepass_bot_session",
         api_id=API_ID,
         api_hash=API_HASH,
-        bot_token=BOT_TOKEN,
         workers=32,
         max_concurrent_transmissions=10,
         parse_mode=enums.ParseMode.HTML,
         plugins=dict(root="bot/handlers")
     )
+
+    if SESSION_STRING:
+        logger.info("Starting bot using pre-authenticated SESSION_STRING (bypasses ImportBotAuthorization).")
+        client_kwargs["session_string"] = SESSION_STRING
+    else:
+        root_session = ROOT_DIR / "timepass_bot_session.session"
+        bot_session = ROOT_DIR / "bot" / "timepass_bot_session.session"
+        if bot_session.exists() and bot_session.stat().st_size > 0 and (not root_session.exists() or root_session.stat().st_size == 0):
+            client_kwargs["name"] = str(ROOT_DIR / "bot" / "timepass_bot_session")
+        client_kwargs["bot_token"] = BOT_TOKEN
+
+    app = Client(**client_kwargs)
     return app
 
 
@@ -68,18 +86,27 @@ async def run_app(dump_cli=None):
     # Create client while event loop is active
     app = create_bot_client()
 
-    async with app:
-        logger.info("Bot started successfully on MTProto client.")
-        if STREAMTAPE_LOGIN and STREAMTAPE_KEY:
-            logger.info(f"Streamtape Official API: ENABLED (User: {STREAMTAPE_LOGIN[:4]}***)")
-        else:
-            logger.warning("Streamtape Official API: NOT DETECTED (Using fallback scraper)")
+    try:
+        async with app:
+            logger.info("Bot started successfully on MTProto client.")
+            if STREAMTAPE_LOGIN and STREAMTAPE_KEY:
+                logger.info(f"Streamtape Official API: ENABLED (User: {STREAMTAPE_LOGIN[:4]}***)")
+            else:
+                logger.warning("Streamtape Official API: NOT DETECTED (Using fallback scraper)")
 
-        # Start background queue workers
-        await queue_manager.start_workers(app)
-        logger.info("All queue workers active and waiting for tasks.")
-        # Keep bot running
-        await asyncio.Event().wait()
+            # Start background queue workers
+            await queue_manager.start_workers(app)
+            logger.info("All queue workers active and waiting for tasks.")
+            # Keep bot running
+            await asyncio.Event().wait()
+    except TimeoutError as te:
+        if "ImportBotAuthorization" in str(te):
+            logger.critical(
+                "Telegram MTProto auth server returned [500 RPC_CALL_FAIL]. "
+                "Telegram servers are experiencing temporary glitches on fresh bot token authorizations. "
+                "To connect instantly without hitting Telegram auth servers, set SESSION_STRING in your configuration."
+            )
+        raise
 
 
 def main():

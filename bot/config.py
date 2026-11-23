@@ -14,10 +14,11 @@ for env_candidate in [
     if env_candidate.exists():
         load_dotenv(env_candidate, override=True)
 
-# Telegram API & Bot Token
+# Telegram API, Bot Token & Session String
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+SESSION_STRING = os.getenv("SESSION_STRING", "").strip().strip('"\'')
 
 if API_ID:
     try:
