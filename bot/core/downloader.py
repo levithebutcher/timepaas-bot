@@ -359,10 +359,90 @@ async def download_direct_stream(
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.warning(f"Download attempt {attempt}/{max_retries} failed: {e}")
             if attempt == max_retries:
+                # Fallback: curl_cffi with Chrome TLS impersonation (bypasses Cloudflare 403, 521, 522 WAF blocks)
+                logger.info("Attempting direct stream download fallback via curl_cffi (Chrome TLS impersonation)...")
+                curl_success = await _download_direct_via_curl_cffi(
+                    url=url,
+                    target_path=target_path,
+                    headers=req_headers,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event
+                )
+                if curl_success and target_path.exists() and target_path.stat().st_size > 0:
+                    _validate_downloaded_file(target_path)
+                    logger.info(f"Direct stream download succeeded via curl_cffi: {target_path.name}")
+                    return target_path
                 raise
             await asyncio.sleep(2 * attempt)
 
     return target_path
+
+
+async def _download_direct_via_curl_cffi(
+    url: str,
+    target_path: Path,
+    headers: dict = None,
+    progress_callback = None,
+    cancel_event: asyncio.Event = None
+) -> bool:
+    """
+    Direct stream download using curl_cffi with Chrome TLS impersonation.
+    Bypasses Cloudflare anti-bot checks (HTTP 403 / 521 / 522) that block aria2c and aiohttp.
+    """
+    try:
+        from curl_cffi.requests import AsyncSession
+    except ImportError:
+        return False
+
+    clean_h = sanitize_headers(headers)
+    req_headers = {"User-Agent": DEFAULT_USER_AGENT}
+    req_headers.update(clean_h)
+    if "Referer" not in req_headers:
+        parsed = urlparse(url)
+        req_headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+
+    chunk_size = 1024 * 1024  # 1 MB chunks
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_target = target_path.with_name(f"tmp_{target_path.name}")
+
+    try:
+        async with AsyncSession(impersonate="chrome120") as session:
+            async with session.stream("GET", url, headers=req_headers, timeout=60) as resp:
+                if resp.status_code not in (200, 206):
+                    logger.debug(f"curl_cffi direct stream fetch returned HTTP {resp.status_code}")
+                    return False
+
+                total_bytes = 0
+                cl = resp.headers.get("content-length") or resp.headers.get("Content-Length")
+                if cl:
+                    try:
+                        total_bytes = int(cl)
+                    except (ValueError, TypeError):
+                        total_bytes = 0
+
+                downloaded = 0
+                async with aiofiles.open(temp_target, "wb") as f:
+                    async for chunk in resp.aiter_content(chunk_size=chunk_size):
+                        if cancel_event and cancel_event.is_set():
+                            raise asyncio.CancelledError("Task was cancelled by user.")
+                        await f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback:
+                            await progress_callback(downloaded, total_bytes)
+
+                if temp_target.exists() and temp_target.stat().st_size > 0:
+                    os.replace(temp_target, target_path)
+                    return True
+                return False
+    except asyncio.CancelledError:
+        if temp_target.exists():
+            temp_target.unlink(missing_ok=True)
+        raise
+    except Exception as e:
+        logger.debug(f"curl_cffi direct download failed: {e}")
+        if temp_target.exists():
+            temp_target.unlink(missing_ok=True)
+        return False
 
 
 _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS = None
@@ -447,7 +527,8 @@ async def _download_m3u8_via_curl_cffi(
                     sub_urls.append(urljoin(m3u8_url, line_clean))
 
             playlist_url = m3u8_url
-            if sub_urls and (sub_urls[0].endswith(".m3u8") or "index" in sub_urls[0] or "urlset" in sub_urls[0]):
+            is_master = "#EXT-X-STREAM-INF" in r.text or (sub_urls and not any(line.strip().startswith("#EXTINF") for line in lines))
+            if is_master and sub_urls:
                 playlist_url = sub_urls[-1]
                 r = await session.get(playlist_url, headers=h, timeout=15)
                 if r.status_code != 200:
@@ -562,7 +643,7 @@ async def _download_m3u8_via_ytdlp(m3u8_url: str, target_path: Path, headers: di
             "format": "best",
             "nocheckcertificate": True,
             "http_headers": headers or {},
-            "concurrent_fragment_downloads": 16,
+            "concurrent_fragment_downloads": 4,
             "retries": 10,
             "fragment_retries": 10,
             "buffersize": 1024 * 1024,
@@ -634,8 +715,6 @@ async def download_m3u8_stream(
         "-http_persistent", "1",
         "-http_multiple", "1",
         "-timeout", "15000000",
-        "-tcp_nodelay", "1",
-        "-tcp_keepalive", "1",
         "-reconnect", "1",
         "-reconnect_at_eof", "1",
         "-reconnect_streamed", "1",

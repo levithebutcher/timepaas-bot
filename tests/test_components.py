@@ -906,6 +906,31 @@ class TestComponents(unittest.TestCase):
         ext = _ffmpeg_supports_allowed_extensions()
         self.assertIsInstance(ext, bool)
 
+    def test_network_stability_and_concurrency_fixes(self):
+        from bot.core.uploader import _UPLOAD_SEMAPHORE
+        from bot.core.downloader import _download_direct_via_curl_cffi
+        from bot.core.progress import _get_msg_lock
+        from pathlib import Path
+        import inspect
+
+        # 1. Verify DC5 upload semaphore concurrency limit is set to 2
+        self.assertEqual(_UPLOAD_SEMAPHORE._value, 2)
+
+        # 2. Verify curl_cffi direct download fallback exists and is an async function
+        self.assertTrue(inspect.iscoroutinefunction(_download_direct_via_curl_cffi))
+
+        # 3. Verify message lock generates distinct locks per chat:msg pair
+        lock1 = _get_msg_lock(12345, 100)
+        lock2 = _get_msg_lock(12345, 100)
+        lock3 = _get_msg_lock(12345, 200)
+        self.assertIs(lock1, lock2)
+        self.assertIsNot(lock1, lock3)
+
+        # 4. Verify -tcp_keepalive is completely absent from downloader.py
+        downloader_code = (Path(__file__).parent.parent / "bot" / "core" / "downloader.py").read_text(encoding="utf-8")
+        self.assertNotIn("-tcp_keepalive", downloader_code)
+        self.assertNotIn("-tcp_nodelay", downloader_code)
+
 
 if __name__ == "__main__":
     unittest.main()

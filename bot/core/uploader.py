@@ -40,8 +40,8 @@ from bot.core.cleaner import remove_path
 
 logger = logging.getLogger(__name__)
 
-# Concurrency semaphore to allow multiple simultaneous uploads without hitting Telegram flood limits
-_UPLOAD_SEMAPHORE = asyncio.Semaphore(4)
+# Concurrency semaphore to allow simultaneous uploads without hitting Telegram flood limits or DC5 socket drops
+_UPLOAD_SEMAPHORE = asyncio.Semaphore(2)
 # Concurrency semaphore to prevent multiple ffmpeg/ffprobe tasks from pinning CPU at 100%
 _METADATA_SEMAPHORE = asyncio.Semaphore(4)
 # Serial lock for dump channel uploads to prevent simultaneous API hammer & 420 FLOOD_WAIT
@@ -240,49 +240,81 @@ async def upload_file(
     Uploads a file to Telegram.
     Tries send_video with metadata and thumbnail first; falls back to send_document.
     Uses unique thumbnail names per task and verifies file existence to prevent concurrency race conditions.
+    Handles Telegram FloodWait and network drops with automatic retry.
     """
     if not file_path.exists() or file_path.stat().st_size == 0:
         raise FileNotFoundError(f"File to upload does not exist or is empty: {file_path}")
 
+    max_upload_retries = 3
+
     async with get_chat_delivery_lock(chat_id):
         async with _UPLOAD_SEMAPHORE:
             generated_thumb = None
+            try:
+                for attempt in range(1, max_upload_retries + 1):
+                    try:
+                        if not as_document and file_path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
+                            file_path, duration, width, height, generated_thumb, actual_thumb = await prepare_video_upload_data(
+                                file_path, custom_thumb
+                            )
+                            try:
+                                sent = await client.send_video(
+                                    chat_id=chat_id,
+                                    video=str(file_path),
+                                    caption=caption,
+                                    duration=duration,
+                                    width=width,
+                                    height=height,
+                                    thumb=actual_thumb,
+                                    supports_streaming=True,
+                                    progress=progress_callback
+                                )
+                                return sent
+                            except FloodWait as fw:
+                                logger.warning(
+                                    f"Telegram FloodWait in send_video: sleeping {fw.value + 1}s (attempt {attempt}/{max_upload_retries})"
+                                )
+                                await asyncio.sleep(fw.value + 1)
+                                continue
+                            except Exception as e:
+                                logger.warning(f"send_video failed ({e}); falling back to send_document for {file_path.name}")
 
-        try:
-            if not as_document and file_path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
-                file_path, duration, width, height, generated_thumb, actual_thumb = await prepare_video_upload_data(
-                    file_path, custom_thumb
-                )
-                try:
-                    sent = await client.send_video(
-                        chat_id=chat_id,
-                        video=str(file_path),
-                        caption=caption,
-                        duration=duration,
-                        width=width,
-                        height=height,
-                        thumb=actual_thumb,
-                        supports_streaming=True,
-                        progress=progress_callback
-                    )
-                    return sent
-                except Exception as e:
-                    logger.warning(f"send_video failed ({e}); falling back to send_document for {file_path.name}")
+                        # Fallback to document upload
+                        doc_thumb = str(custom_thumb) if (custom_thumb and Path(custom_thumb).exists() and Path(custom_thumb).stat().st_size > 0) else None
+                        try:
+                            sent = await client.send_document(
+                                chat_id=chat_id,
+                                document=str(file_path),
+                                caption=caption,
+                                thumb=doc_thumb,
+                                progress=progress_callback
+                            )
+                            return sent
+                        except FloodWait as fw:
+                            logger.warning(
+                                f"Telegram FloodWait in send_document: sleeping {fw.value + 1}s (attempt {attempt}/{max_upload_retries})"
+                            )
+                            await asyncio.sleep(fw.value + 1)
+                            continue
 
-            # Fallback to document upload
-            doc_thumb = str(custom_thumb) if (custom_thumb and Path(custom_thumb).exists() and Path(custom_thumb).stat().st_size > 0) else None
-            sent = await client.send_document(
-                chat_id=chat_id,
-                document=str(file_path),
-                caption=caption,
-                thumb=doc_thumb,
-                progress=progress_callback
-            )
-            return sent
+                    except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError) as net_err:
+                        logger.warning(
+                            f"Network error during upload of {file_path.name} (attempt {attempt}/{max_upload_retries}): {net_err}"
+                        )
+                        if attempt == max_upload_retries:
+                            raise
+                        await asyncio.sleep(2 * attempt)
+                    except Exception as ex:
+                        if attempt == max_upload_retries:
+                            raise
+                        logger.warning(
+                            f"Upload error for {file_path.name} (attempt {attempt}/{max_upload_retries}): {ex}, retrying in {attempt * 2}s..."
+                        )
+                        await asyncio.sleep(2 * attempt)
 
-        finally:
-            if generated_thumb and generated_thumb.exists():
-                remove_path(generated_thumb)
+            finally:
+                if generated_thumb and generated_thumb.exists():
+                    remove_path(generated_thumb)
 
 
 async def upload_video_albums(

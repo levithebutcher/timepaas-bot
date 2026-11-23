@@ -24,8 +24,17 @@ from bot.config import PROGRESS_UPDATE_INTERVAL
 
 logger = logging.getLogger(__name__)
 
-# Track last edit timestamp per task to prevent Telegram FloodWait
+# Track last edit timestamp and concurrency lock per message to prevent Telegram FloodWait
 _LAST_UPDATE_TIMES = {}
+_MESSAGE_LOCKS = {}
+
+
+def _get_msg_lock(chat_id: int, message_id: int) -> asyncio.Lock:
+    """Returns an async Lock per Telegram message to prevent simultaneous edit_message_text races."""
+    key = f"{chat_id}:{message_id}"
+    if key not in _MESSAGE_LOCKS:
+        _MESSAGE_LOCKS[key] = asyncio.Lock()
+    return _MESSAGE_LOCKS[key]
 
 
 def format_size(bytes_val: int) -> str:
@@ -135,83 +144,87 @@ async def update_status_message(
     Displays modern, transparent progress layouts tailored for Normal or Album mode.
     Handles Telegram FloodWait exceptions seamlessly.
     """
-    now = time.time()
-    last_time = _LAST_UPDATE_TIMES.get(task_id, 0)
+    msg_key = f"{chat_id}:{message_id}"
+    async with _get_msg_lock(chat_id, message_id):
+        now = time.time()
+        last_time = _LAST_UPDATE_TIMES.get(msg_key, 0)
+        min_interval = 1.0 if force else PROGRESS_UPDATE_INTERVAL
 
-    if not force and (now - last_time < PROGRESS_UPDATE_INTERVAL):
-        return
+        if now - last_time < min_interval:
+            return
 
-    _LAST_UPDATE_TIMES[task_id] = now
+        _LAST_UPDATE_TIMES[msg_key] = now
 
-    # Calculate speed, elapsed & ETA
-    speed_str = "0 B/s"
-    eta_str = "00:00"
-    elapsed_str = "00:00"
-    if start_time and current > 0:
-        elapsed = now - start_time
-        if elapsed > 0:
-            elapsed_str = format_time(elapsed)
-            speed = current / elapsed
-            speed_str = f"{format_size(int(speed))}/s"
-            if total > current and speed > 0:
-                eta = (total - current) / speed
-                eta_str = format_time(eta)
+        # Calculate speed, elapsed & ETA
+        speed_str = "0 B/s"
+        eta_str = "00:00"
+        elapsed_str = "00:00"
+        if start_time and current > 0:
+            elapsed = now - start_time
+            if elapsed > 0:
+                elapsed_str = format_time(elapsed)
+                speed = current / elapsed
+                speed_str = f"{format_size(int(speed))}/s"
+                if total > current and speed > 0:
+                    eta = (total - current) / speed
+                    eta_str = format_time(eta)
 
-    bar = generate_bar(current, total, length=10)
-    curr_str = format_size(current)
-    total_str = format_size(total) if total > 0 else "Unknown"
+        bar = generate_bar(current, total, length=10)
+        curr_str = format_size(current)
+        total_str = format_size(total) if total > 0 else "Unknown"
 
-    display_name = file_name if len(file_name) <= 35 else file_name[:32] + "..."
-    if not display_name:
-        display_name = "Media File"
-    safe_name = html.escape(display_name)
+        display_name = file_name if len(file_name) <= 35 else file_name[:32] + "..."
+        if not display_name:
+            display_name = "Media File"
+        safe_name = html.escape(display_name)
 
-    mode_tag = "🎞 <b>Album Mode</b>" if is_album else "🎥 <b>Video Player</b>"
-    text = (
-        f"<blockquote>"
-        f"⚡ <b>TIMEPASS LEECH</b> • {mode_tag}\n"
-        f"📁 <code>{safe_name}</code>\n"
-        f"📊 <code>{bar}</code>\n"
-        f"💾 <b>{curr_str}</b> / {total_str} • ⚡ <b>{speed_str}</b> • ⏱ <b>{eta_str}</b>\n"
-        f"🔄 {action}"
-        f"</blockquote>"
-    )
+        mode_tag = "🎞 <b>Album Mode</b>" if is_album else "🎥 <b>Video Player</b>"
+        text = (
+            f"<blockquote>"
+            f"⚡ <b>TIMEPASS LEECH</b> • {mode_tag}\n"
+            f"📁 <code>{safe_name}</code>\n"
+            f"📊 <code>{bar}</code>\n"
+            f"💾 <b>{curr_str}</b> / {total_str} • ⚡ <b>{speed_str}</b> • ⏱ <b>{eta_str}</b>\n"
+            f"🔄 {action}"
+            f"</blockquote>"
+        )
 
-    buttons = []
-    # Real-time telemetry badges
-    info_row = []
-    if speed_str and speed_str != "0 B/s":
-        info_row.append(InlineKeyboardButton(f"⚡ {speed_str}", callback_data=f"hud:speed:{task_id}"))
-    if eta_str and eta_str != "00:00":
-        info_row.append(InlineKeyboardButton(f"⏱ {eta_str}", callback_data=f"hud:eta:{task_id}"))
-    if curr_str and curr_str != "0 B":
-        info_row.append(InlineKeyboardButton(f"💾 {curr_str}", callback_data=f"hud:size:{task_id}"))
-    if info_row:
-        buttons.append(info_row)
+        buttons = []
+        # Real-time telemetry badges
+        info_row = []
+        if speed_str and speed_str != "0 B/s":
+            info_row.append(InlineKeyboardButton(f"⚡ {speed_str}", callback_data=f"hud:speed:{task_id}"))
+        if eta_str and eta_str != "00:00":
+            info_row.append(InlineKeyboardButton(f"⏱ {eta_str}", callback_data=f"hud:eta:{task_id}"))
+        if curr_str and curr_str != "0 B":
+            info_row.append(InlineKeyboardButton(f"💾 {curr_str}", callback_data=f"hud:size:{task_id}"))
+        if info_row:
+            buttons.append(info_row)
 
-    buttons.append([InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel:{task_id}")])
-    reply_markup = InlineKeyboardMarkup(buttons) if InlineKeyboardMarkup and InlineKeyboardButton else None
+        buttons.append([InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel:{task_id}")])
+        reply_markup = InlineKeyboardMarkup(buttons) if InlineKeyboardMarkup and InlineKeyboardButton else None
 
-    for attempt in range(3):
-        try:
-            edit_kwargs = dict(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=text,
-                reply_markup=reply_markup
-            )
-            if HTML_PARSE_MODE:
-                edit_kwargs["parse_mode"] = HTML_PARSE_MODE
-            await client.edit_message_text(**edit_kwargs)
-            break
-        except MessageNotModified:
-            break
-        except FloodWait as e:
-            logger.warning(f"FloodWait received: sleeping for {e.value}s")
-            await asyncio.sleep(e.value + 1)
-        except Exception as e:
-            logger.debug(f"Failed to edit status message for {task_id}: {e}")
-            break
+        for attempt in range(3):
+            try:
+                edit_kwargs = dict(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=text,
+                    reply_markup=reply_markup
+                )
+                if HTML_PARSE_MODE:
+                    edit_kwargs["parse_mode"] = HTML_PARSE_MODE
+                await client.edit_message_text(**edit_kwargs)
+                break
+            except MessageNotModified:
+                break
+            except FloodWait as e:
+                logger.warning(f"FloodWait received for msg {message_id}: sleeping for {e.value}s")
+                _LAST_UPDATE_TIMES[msg_key] = time.time() + e.value + 1
+                await asyncio.sleep(e.value + 1)
+            except Exception as e:
+                logger.debug(f"Failed to edit status message for {task_id}: {e}")
+                break
 
 
 async def update_album_pipeline_dashboard(
@@ -234,17 +247,19 @@ async def update_album_pipeline_dashboard(
     """
     from bot.core.cleaner import get_free_disk_gb
 
-    now = time.time()
-    batch_key = f"batch_{batch_id}"
-    last_time = _LAST_UPDATE_TIMES.get(batch_key, 0)
+    msg_key = f"{chat_id}:{message_id}"
+    async with _get_msg_lock(chat_id, message_id):
+        now = time.time()
+        last_time = _LAST_UPDATE_TIMES.get(msg_key, 0)
+        min_interval = 1.0 if force else PROGRESS_UPDATE_INTERVAL
 
-    if not force and (now - last_time < PROGRESS_UPDATE_INTERVAL):
-        return
+        if now - last_time < min_interval:
+            return
 
-    _LAST_UPDATE_TIMES[batch_key] = now
-    free_gb = get_free_disk_gb()
+        _LAST_UPDATE_TIMES[msg_key] = now
+        free_gb = get_free_disk_gb()
 
-    # Upload section
+        # Upload section
     if current_up:
         alb_num = current_up.get("album_num", 1)
         alb_cnt = current_up.get("count", 1)
@@ -360,7 +375,8 @@ async def update_album_pipeline_dashboard(
         except MessageNotModified:
             break
         except FloodWait as e:
-            logger.warning(f"FloodWait received in album dashboard: sleeping {e.value}s")
+            logger.warning(f"FloodWait received in album dashboard msg {message_id}: sleeping {e.value}s")
+            _LAST_UPDATE_TIMES[msg_key] = time.time() + e.value + 1
             await asyncio.sleep(e.value + 1)
         except Exception as e:
             logger.debug(f"Failed to edit album dashboard for {batch_id}: {e}")

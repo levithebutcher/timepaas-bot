@@ -666,6 +666,13 @@ class QueueManager:
                             if batch.cancel_event.is_set():
                                 return
 
+                            # Stagger concurrent starts to prevent CDN 429 rate limit spikes
+                            stagger = 0.8 * (item_idx % ALBUM_CONCURRENT_DOWNLOADS)
+                            if stagger > 0:
+                                await asyncio.sleep(stagger)
+                                if batch.cancel_event.is_set():
+                                    return
+
                             async with dl_lock:
                                 active_dls[item_idx] = {
                                     "file_name": "Resolving stream...",
