@@ -6,7 +6,7 @@ from urllib.parse import urljoin, urlparse, parse_qs, unquote
 import aiohttp
 from bs4 import BeautifulSoup
 from bot.config import DEFAULT_USER_AGENT
-from bot.extractors.video_hosts import extract_from_video_hosts, unpack_dean_edwards, sanitize_title
+from bot.extractors.video_hosts import extract_from_video_hosts, unpack_dean_edwards, sanitize_title, get_stream_resolution_score
 
 logger = logging.getLogger(__name__)
 
@@ -312,27 +312,31 @@ async def extract_from_general_website(url: str) -> dict:
         unpacked_code = unpack_dean_edwards(html)
         corpus = clean_html + "\n" + (unpacked_code.replace(r"\/", "/") if unpacked_code else "")
 
-        # JWPlayer / VideoJS sources array
-        source_matches = re.findall(r'sources\s*:\s*\[\s*\{\s*(?:file|src)\s*:\s*["\']([^"\']+)["\']', corpus)
-        if source_matches:
-            for sm in source_matches:
-                if any(ext in sm.lower() for ext in (".m3u8", ".mp4", ".webm", ".mkv")):
-                    full_sm = urljoin(final_url, sm)
-                    logger.info(f"[General Extractor] Found stream in JS sources array: {full_sm}")
-                    return {
-                        "type": "m3u8" if ".m3u8" in full_sm else "direct",
-                        "url": full_sm,
-                        "title": page_title,
-                        "headers": headers
-                    }
+        # JWPlayer / VideoJS sources array and direct JS variables (ranked by resolution)
+        candidate_streams = []
 
-        # Direct JS variables (e.g. file = "...", streamUrl = "...")
-        var_matches = re.findall(r'(?:file|src|stream|video_url|videoUrl|hlsUrl|source)\s*[:=]\s*["\'](https?://[^"\']+\.(?:m3u8|mp4|webm|mkv)[^"\']*)["\']', corpus)
-        if var_matches:
-            logger.info(f"[General Extractor] Found stream in JS variable: {var_matches[0]}")
+        source_matches = re.findall(r'sources\s*:\s*\[\s*\{\s*(?:file|src)\s*:\s*["\']([^"\']+)["\']', corpus)
+        for sm in source_matches:
+            if any(ext in sm.lower() for ext in (".m3u8", ".mp4", ".webm", ".mkv")):
+                full_sm = urljoin(final_url, sm)
+                if not any(ign in full_sm.lower() for ign in ("event_reporting", "stats.php")):
+                    candidate_streams.append((get_stream_resolution_score(full_sm), full_sm))
+
+        var_matches = re.findall(
+            r'(?:file\w*|src\w*|stream\w*|video_url\w*|video_alt_url\w*|videoUrl|hlsUrl|source\w*)\s*[:=]\s*["\'](https?://[^"\']+\.(?:m3u8|mp4|webm|mkv)[^"\']*)["\']',
+            corpus
+        )
+        for vm in var_matches:
+            if not any(ign in vm.lower() for ign in ("event_reporting", "stats.php", "preview.jpg")):
+                candidate_streams.append((get_stream_resolution_score(vm), vm))
+
+        if candidate_streams:
+            candidate_streams.sort(key=lambda x: x[0], reverse=True)
+            best_score, best_stream = candidate_streams[0]
+            logger.info(f"[General Extractor] Found stream in JS (highest quality score={best_score}): {best_stream}")
             return {
-                "type": "m3u8" if ".m3u8" in var_matches[0] else "direct",
-                "url": var_matches[0],
+                "type": "m3u8" if ".m3u8" in best_stream else "direct",
+                "url": best_stream,
                 "title": page_title,
                 "headers": headers
             }

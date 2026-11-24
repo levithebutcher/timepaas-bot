@@ -134,6 +134,15 @@ THOTPLAY_DOMAINS = {
     "thotplay.net", "www.thotplay.net"
 }
 
+XVIDEOTUBE_DOMAINS = {
+    "x-video.tube", "www.x-video.tube", "xvideo.tube", "www.xvideo.tube"
+}
+
+
+def is_xvideotube_host(netloc: str) -> bool:
+    netloc = netloc.lower().split(":")[0]
+    return is_matching_host(netloc, XVIDEOTUBE_DOMAINS) or "x-video.tube" in netloc or "xvideo.tube" in netloc
+
 
 def is_thotplay_host(netloc: str) -> bool:
     netloc = netloc.lower().split(":")[0]
@@ -1893,6 +1902,103 @@ async def resolve_thotplay(url: str, custom_title: str = None) -> dict:
     return None
 
 
+def get_stream_resolution_score(text: str) -> int:
+    """Computes a numerical score for video resolution string/URL to pick highest quality."""
+    t = text.lower()
+    if any(k in t for k in ("2160p", "4k", "uhd")):
+        return 2160
+    if any(k in t for k in ("1440p", "2k", "qhd")):
+        return 1440
+    if any(k in t for k in ("1080p", "fullhd", "fhd")):
+        return 1080
+    if any(k in t for k in ("720p", "hd")):
+        return 720
+    if "540p" in t:
+        return 540
+    if "480p" in t:
+        return 480
+    if "360p" in t:
+        return 360
+    if "240p" in t:
+        return 240
+    if "preview" in t:
+        return 100
+    return 300
+
+
+async def resolve_xvideotube(url: str, custom_title: str = None) -> dict:
+    """
+    Tier-0 Extractor for X-Video.tube / KVS engine video pages.
+    Extracts all candidate stream resolutions, sorts by quality, and returns the highest resolution.
+    Bypasses yt-dlp flashvars extraction failures entirely.
+    """
+    parsed = urlparse(url)
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": f"{parsed.scheme or 'https'}://{parsed.netloc}/"
+    }
+
+    html = await _fetch_stealth_text(url, headers)
+    if not html:
+        logger.warning(f"Failed to fetch x-video.tube page: {url}")
+        return None
+
+    # Title extraction
+    title = custom_title
+    if not title:
+        tm = re.search(r"video_title\s*:\s*['\"]([^'\"]+)['\"]", html)
+        if tm:
+            title = tm.group(1).strip()
+    if not title:
+        t_match = re.search(r"<title>(.*?)</title>", html, re.I)
+        if t_match:
+            raw_t = t_match.group(1).strip()
+            clean_t = re.sub(r"\s*-\s*X-video!?\s*$", "", raw_t, flags=re.I).strip()
+            title = clean_t
+    if not title:
+        m_id = re.search(r"/video/(\d+)", parsed.path)
+        title = f"xvideotube_{m_id.group(1) if m_id else 'video'}"
+
+    title = sanitize_title(title)
+    if not title.lower().endswith(".mp4"):
+        title += ".mp4"
+
+    # Extract all candidate streams
+    candidates = []
+
+    # 1. Flashvars / JS variables: video_url, video_alt_url, etc.
+    js_vars = re.findall(
+        r"(video_url\w*|video_alt_url\w*)\s*:\s*['\"](https?://[^'\"]+\.(?:mp4|webm|m3u8)[^'\"]*)['\"]",
+        html
+    )
+    for var_name, vurl in js_vars:
+        if any(ign in var_name or ign in vurl for ign in ("event_reporting", "stats.php", "preview.mp4.jpg")):
+            continue
+        score = get_stream_resolution_score(vurl)
+        candidates.append((score, vurl))
+
+    # 2. HTML5 <source> tags
+    source_tags = re.findall(r'<source[^>]+src=[\'"](https?://[^\'"]+)[\'"][^>]*>', html, re.I)
+    for s_url in source_tags:
+        if not any(ign in s_url for ign in ("event_reporting", "stats.php", "preview.jpg")):
+            score = get_stream_resolution_score(s_url)
+            candidates.append((score, s_url))
+
+    # Sort candidates by score descending to pick highest available resolution (1080p > 720p > 480p)
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    if candidates:
+        best_score, best_url = candidates[0]
+        logger.info(f"x-video.tube resolved best quality (score={best_score}): {best_url[:80]}...")
+        return {
+            "type": "m3u8" if ".m3u8" in best_url else "direct",
+            "url": best_url,
+            "title": title,
+            "headers": headers
+        }
+
+    return None
+
+
 async def extract_from_video_hosts(url: str) -> dict:
     """
     Tier-0 Router: Checks if URL belongs to any specialized video hosting provider.
@@ -1983,5 +2089,9 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_thotplay_host(netloc):
         logger.info(f"Target recognized as Thotplay: {url}")
         return await resolve_thotplay(url)
+
+    if is_xvideotube_host(netloc):
+        logger.info(f"Target recognized as X-Video.tube: {url}")
+        return await resolve_xvideotube(url)
 
     return None

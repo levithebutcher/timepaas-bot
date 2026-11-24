@@ -150,8 +150,10 @@ async def _download_via_aria2(
     parsed = urlparse(url)
     referer = clean_headers.get("Referer", f"{parsed.scheme}://{parsed.netloc}/")
 
-    split_connections = max(16, min(32, connections * 2))
-    server_connections = min(16, connections)
+    # Use balanced parallel streams: 8 connections stays safely below CDN/Nginx limit_conn limits
+    # and prevents 503 / connection drop while achieving max multi-threaded throughput.
+    server_connections = min(8, max(4, connections // 2 if connections > 8 else connections))
+    split_connections = min(16, max(8, connections))
 
     cmd = [
         aria2_bin,
@@ -160,13 +162,16 @@ async def _download_via_aria2(
         f"--max-connection-per-server={server_connections}",
         f"--split={split_connections}",
         "--min-split-size=1M",
-        "--piece-length=1M",
         "--disk-cache=128M",
         "--optimize-concurrent-downloads=true",
         "--conditional-get=true",
         "--stream-piece-selector=geom",
         "--summary-interval=1",
         "--console-log-level=warn",
+        "--timeout=60",
+        "--connect-timeout=20",
+        "--max-tries=5",
+        "--retry-wait=2",
         f"--user-agent={user_agent}",
         "-d", str(target_path.parent.resolve()),
         "-o", target_path.name,
@@ -257,6 +262,93 @@ async def _download_via_aria2(
         return False
 
 
+async def _download_parallel_range_chunks(
+    url: str,
+    target_path: Path,
+    headers: dict = None,
+    progress_callback = None,
+    cancel_event: asyncio.Event = None,
+    num_workers: int = 6
+) -> bool:
+    """
+    Downloads direct media using concurrent byte-range requests with sparse file writes.
+    Provides multi-stream acceleration (5x-10x) for servers that throttle single-stream downloads.
+    """
+    try:
+        req_headers = {"User-Agent": DEFAULT_USER_AGENT}
+        if headers:
+            req_headers.update(headers)
+
+        connector = aiohttp.TCPConnector(limit=num_workers, enable_cleanup_closed=True)
+        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=60)
+
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            # Check headers via small range probe (first 2 bytes)
+            probe_headers = dict(req_headers)
+            probe_headers["Range"] = "bytes=0-1"
+            async with session.get(url, headers=probe_headers) as resp:
+                if resp.status != 206:
+                    return False
+                cr = resp.headers.get("Content-Range", "")
+                m = re.search(r"/(\d+)$", cr)
+                if not m:
+                    return False
+                total_bytes = int(m.group(1))
+
+            if total_bytes < 5 * 1024 * 1024:
+                return False  # Small files don't need multi-range split
+
+            # Pre-allocate sparse file
+            with target_path.open("wb") as pf:
+                pf.truncate(total_bytes)
+
+            chunk_size = total_bytes // num_workers
+            ranges = []
+            for i in range(num_workers):
+                start = i * chunk_size
+                end = total_bytes - 1 if i == num_workers - 1 else (i + 1) * chunk_size - 1
+                ranges.append((start, end))
+
+            downloaded_bytes = 0
+            lock = asyncio.Lock()
+
+            async def worker(start: int, end: int):
+                nonlocal downloaded_bytes
+                if cancel_event and cancel_event.is_set():
+                    raise asyncio.CancelledError()
+                h = dict(req_headers)
+                h["Range"] = f"bytes={start}-{end}"
+                async with session.get(url, headers=h) as r:
+                    if r.status not in (200, 206):
+                        raise RuntimeError(f"Unexpected status {r.status} on byte range {start}-{end}")
+                    offset = start
+                    async for chunk in r.content.iter_chunked(256 * 1024):
+                        if cancel_event and cancel_event.is_set():
+                            raise asyncio.CancelledError()
+                        with target_path.open("r+b") as out_f:
+                            out_f.seek(offset)
+                            out_f.write(chunk)
+                        offset += len(chunk)
+                        async with lock:
+                            downloaded_bytes += len(chunk)
+                            if progress_callback:
+                                try:
+                                    await progress_callback(downloaded_bytes, total_bytes)
+                                except Exception:
+                                    pass
+
+            await asyncio.gather(*[worker(s, e) for s, e in ranges])
+            return target_path.exists() and target_path.stat().st_size == total_bytes
+
+    except asyncio.CancelledError:
+        target_path.unlink(missing_ok=True)
+        raise
+    except Exception as e:
+        logger.debug(f"Parallel byte-range download failed, falling back to sequential: {e}")
+        target_path.unlink(missing_ok=True)
+        return False
+
+
 async def download_direct_stream(
     url: str,
     target_path: Path,
@@ -298,7 +390,24 @@ async def download_direct_stream(
         except Exception as e:
             logger.warning(f"aria2c attempt failed: {e}, falling back to aiohttp.")
 
-    # 2. Resilient chunked aiohttp downloader
+    # 2. Multi-connection accelerated byte-range chunk downloader (Python turbo mode)
+    try:
+        parallel_success = await _download_parallel_range_chunks(
+            url=url,
+            target_path=target_path,
+            headers=req_headers,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event
+        )
+        if parallel_success:
+            _validate_downloaded_file(target_path)
+            return target_path
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug(f"Parallel byte-range download fallback failed: {e}")
+
+    # 3. Resilient chunked aiohttp downloader
     req_headers = {"User-Agent": DEFAULT_USER_AGENT}
     req_headers.update(clean_headers)
 

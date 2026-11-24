@@ -89,6 +89,11 @@ def get_canonical_url_key(url: str) -> str:
         parts = [p for p in path.split("/") if p and p not in ("e", "v", "d", "embed")]
         if parts:
             return f"thotplay:{parts[0]}"
+    # X-Video.tube / KVS (e.g. /video/729090/...)
+    if "x-video.tube" in netloc or "xvideo.tube" in netloc:
+        m = re.search(r"/video/(\d+)", path)
+        if m:
+            return f"xvideotube:{m.group(1)}"
     return u_clean
 
 
