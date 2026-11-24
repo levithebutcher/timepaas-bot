@@ -94,6 +94,11 @@ def get_canonical_url_key(url: str) -> str:
         m = re.search(r"/video/(\d+)", path)
         if m:
             return f"xvideotube:{m.group(1)}"
+    # Leakedzone (e.g. /sunnyandskye/video/22931547 or /video/22931547)
+    if "leakedzone" in netloc:
+        m = re.search(r"/video/(\d+)", path)
+        if m:
+            return f"leakedzone:{m.group(1)}"
     return u_clean
 
 

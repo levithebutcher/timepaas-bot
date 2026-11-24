@@ -138,6 +138,15 @@ XVIDEOTUBE_DOMAINS = {
     "x-video.tube", "www.x-video.tube", "xvideo.tube", "www.xvideo.tube"
 }
 
+LEAKEDZONE_DOMAINS = {
+    "leakedzone.com", "www.leakedzone.com"
+}
+
+
+def is_leakedzone_host(netloc: str) -> bool:
+    netloc = netloc.lower().split(":")[0]
+    return is_matching_host(netloc, LEAKEDZONE_DOMAINS) or "leakedzone" in netloc
+
 
 def is_xvideotube_host(netloc: str) -> bool:
     netloc = netloc.lower().split(":")[0]
@@ -1999,6 +2008,79 @@ async def resolve_xvideotube(url: str, custom_title: str = None) -> dict:
     return None
 
 
+def _decrypt_leakedzone_file(enc_str: str) -> str:
+    """Decrypts leakedzone obfuscated stream URL (slice 16, reverse, base64 decode)."""
+    s = enc_str[16:-16]
+    return base64.b64decode(s[::-1]).decode("utf-8")
+
+
+async def resolve_leakedzone(url: str, custom_title: str = None) -> dict:
+    """
+    Tier-0 Extractor for Leakedzone (leakedzone.com/<creator>/video/<id>).
+    Decrypts the JWPlayer video stream URL and bypasses VAST ad-banner pre-rolls entirely.
+    """
+    parsed = urlparse(url)
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": f"{parsed.scheme or 'https'}://{parsed.netloc}/"
+    }
+
+    html = await _fetch_stealth_text(url, headers)
+    if not html:
+        logger.warning(f"Failed to fetch Leakedzone page: {url}")
+        return None
+
+    # Title extraction
+    title = custom_title
+    if not title:
+        t_match = re.search(r"<title>(.*?)</title>", html, re.I)
+        if t_match:
+            raw_t = t_match.group(1).strip()
+            clean_t = re.sub(r"\s*-\s*Leakedzone\s*$", "", raw_t, flags=re.I).strip()
+            clean_t = re.sub(r"#(\d+)", r"\1", clean_t).strip()
+            title = clean_t
+    if not title:
+        m_id = re.search(r"/video/(\d+)", parsed.path)
+        title = f"leakedzone_{m_id.group(1) if m_id else 'video'}"
+
+    title = sanitize_title(title)
+    if not title.lower().endswith(".mp4"):
+        title += ".mp4"
+
+    # 1. Extract and decrypt JWPlayer file: f("...")
+    m_enc = re.search(r'file\s*:\s*f\s*\(\s*["\']([^"\']+)["\']\s*\)', html)
+    if m_enc:
+        try:
+            stream_url = _decrypt_leakedzone_file(m_enc.group(1))
+            if stream_url and (".m3u8" in stream_url or ".mp4" in stream_url):
+                logger.info(f"Leakedzone decrypted stream URL: {stream_url[:60]}...")
+                return {
+                    "type": "m3u8" if ".m3u8" in stream_url else "direct",
+                    "url": stream_url,
+                    "title": title,
+                    "headers": {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                        "Referer": f"{parsed.scheme or 'https'}://{parsed.netloc}/",
+                        "Origin": f"{parsed.scheme or 'https'}://{parsed.netloc}"
+                    }
+                }
+        except Exception as e:
+            logger.warning(f"Leakedzone decryption error: {e}")
+
+    # 2. Fallback: search for direct m3u8 playlist or mp4 in HTML
+    m3u8_matches = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
+    for m_url in m3u8_matches:
+        if not any(ign in m_url.lower() for ign in ("vast", "ad", "creatives")):
+            return {
+                "type": "m3u8",
+                "url": m_url,
+                "title": title,
+                "headers": headers
+            }
+
+    return None
+
+
 async def extract_from_video_hosts(url: str) -> dict:
     """
     Tier-0 Router: Checks if URL belongs to any specialized video hosting provider.
@@ -2093,5 +2175,9 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_xvideotube_host(netloc):
         logger.info(f"Target recognized as X-Video.tube: {url}")
         return await resolve_xvideotube(url)
+
+    if is_leakedzone_host(netloc):
+        logger.info(f"Target recognized as Leakedzone: {url}")
+        return await resolve_leakedzone(url)
 
     return None

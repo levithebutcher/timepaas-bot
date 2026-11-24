@@ -11,9 +11,12 @@ AD_TRACKER_PATTERNS = (
     "google-analytics.com", "adservice.google", "pagead2.googlesyndication",
     "adnxs.com", "exoclick.com", "popcash.net", "popads.net",
     "propellerads.com", "juicyads.com", "trafficjunky.net", "trafficstars.com",
+    "trafficfactory.biz", "traffichaus.com", "bluetrafficstream.com", "awdeliverynet.com",
+    "gsrv.dev", "adsterra.com", "monetag.com", "porndude.tv", "eunow4u.com",
     "yandex.ru", "yandex.net", "clarity.ms", "scorecardresearch.com",
     "histats.com", "hotjar.com", "onesignal.com", "adsco.re",
-    "/ads/", "/ad/", "/advert/", "/banner/", "adsterra.com", "monetag.com"
+    "/ads/", "/ad/", "/advert/", "/banner/", "/creatives/", "/creative/",
+    "/vast/", "/preroll/", "/pre-roll/", "/popunder/", "data/creatives"
 )
 
 NON_MEDIA_EXTENSIONS = (
