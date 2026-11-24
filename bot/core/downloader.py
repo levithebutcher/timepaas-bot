@@ -547,7 +547,7 @@ async def _download_m3u8_via_curl_cffi(
                     key_match = re.search(r'URI=["\']([^"\']+)["\']', line_str)
                     if key_match:
                         key_url = urljoin(playlist_url, key_match.group(1))
-                        key_fn = f"key_{key_count}.bin"
+                        key_fn = f"key_{key_count}.key"
                         key_count += 1
                         r_key = await session.get(key_url, headers=h, timeout=15)
                         if r_key.status_code != 200:
@@ -603,9 +603,15 @@ async def _download_m3u8_via_curl_cffi(
             await asyncio.gather(*tasks)
 
             # Local remux with FFmpeg (offline, zero network)
+            extra_remux_opts = ["-protocol_whitelist", "file,crypto,data"]
+            if _ffmpeg_supports_allowed_extensions():
+                extra_remux_opts.extend(["-allowed_extensions", "ALL"])
+            if _ffmpeg_supports_allowed_segment_extensions():
+                extra_remux_opts.extend(["-allowed_segment_extensions", "ALL"])
+
             remux_cmd = [
                 "ffmpeg", "-y",
-                "-protocol_whitelist", "file,crypto,data",
+                *extra_remux_opts,
                 "-i", str(local_m3u8),
                 "-c", "copy",
                 "-movflags", "+faststart",

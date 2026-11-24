@@ -84,6 +84,11 @@ def get_canonical_url_key(url: str) -> str:
         if parts:
             file_id = parts[0].rsplit(".", 1)[0]
             return f"lulustream:{file_id}"
+    # Thotplay (e.g. /e/file_id or /file_id)
+    if "thotplay" in netloc:
+        parts = [p for p in path.split("/") if p and p not in ("e", "v", "d", "embed")]
+        if parts:
+            return f"thotplay:{parts[0]}"
     return u_clean
 
 

@@ -129,6 +129,16 @@ ABSTREAM_DOMAINS = {
     "abstream.to", "abstream.net", "abstream.org", "streambucket.xyz"
 }
 
+THOTPLAY_DOMAINS = {
+    "thotplay.com", "www.thotplay.com", "thotplay.org", "www.thotplay.org",
+    "thotplay.net", "www.thotplay.net"
+}
+
+
+def is_thotplay_host(netloc: str) -> bool:
+    netloc = netloc.lower().split(":")[0]
+    return is_matching_host(netloc, THOTPLAY_DOMAINS) or "thotplay" in netloc
+
 
 def is_streamcash_host(netloc: str) -> bool:
     netloc = netloc.lower().split(":")[0]
@@ -1781,6 +1791,108 @@ async def resolve_livecamrips(url: str) -> dict:
     return None
 
 
+def _decrypt_cryptojs_aes(ciphertext_b64: str, password: str) -> str:
+    """Decrypts CryptoJS AES encrypted string using OpenSSL EVP_BytesToKey."""
+    import base64
+    import hashlib
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    raw = base64.b64decode(ciphertext_b64)
+    if not raw.startswith(b"Salted__"):
+        raise ValueError("Invalid CryptoJS format (missing Salted__ prefix)")
+    salt = raw[8:16]
+    ciphertext = raw[16:]
+
+    d = b""
+    d_i = b""
+    while len(d) < (32 + 16):
+        d_i = hashlib.md5(d_i + password.encode("utf-8") + salt).digest()
+        d += d_i
+    key, iv = d[:32], d[32:48]
+
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+    decryptor = cipher.decryptor()
+    decrypted = decryptor.update(ciphertext) + decryptor.finalize()
+    pad_len = decrypted[-1]
+    if pad_len < 1 or pad_len > 16:
+        raise ValueError("Invalid padding length")
+    return decrypted[:-pad_len].decode("utf-8")
+
+
+async def resolve_thotplay(url: str, custom_title: str = None) -> dict:
+    """
+    Direct extractor for Thotplay (thotplay.com/e/<id>).
+    Extracts AES-encrypted videoURL and secret key, decrypts to HLS master m3u8 playlist.
+    """
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.split("/") if p]
+    if parts and parts[0] != "e":
+        video_id = parts[-1]
+        fetch_url = f"{parsed.scheme or 'https'}://{parsed.netloc}/e/{video_id}"
+    else:
+        fetch_url = url
+
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": f"{parsed.scheme or 'https'}://{parsed.netloc}/",
+    }
+
+    html = await _fetch_stealth_text(fetch_url, headers)
+    if not html:
+        logger.warning(f"Failed to fetch Thotplay page: {fetch_url}")
+        return None
+
+    # Title extraction
+    title = custom_title
+    if not title:
+        t_match = re.search(r"<title>(.*?)</title>", html, re.I)
+        if t_match:
+            raw_t = t_match.group(1).strip()
+            clean_t = re.sub(r"[\\/:*?\"<>|]", "", raw_t).strip()
+            if clean_t:
+                title = clean_t if clean_t.lower().endswith(".mp4") else f"{clean_t}.mp4"
+    if not title:
+        video_id = parts[-1] if parts else "video"
+        title = f"thotplay_{video_id}.mp4"
+
+    # Extract encrypted videoURL and decryption key
+    v_match = re.search(r'const\s+videoURL\s*=\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]', html)
+    k_match = re.search(r'decryptLink\s*\(\s*videoURL\s*,\s*[\x27\x22]([^\x27\x22]+)[\x27\x22]', html)
+
+    if v_match and k_match:
+        try:
+            m3u8_url = _decrypt_cryptojs_aes(v_match.group(1), k_match.group(1))
+            if m3u8_url and (".m3u8" in m3u8_url or "api-embed" in m3u8_url):
+                logger.info(f"Thotplay decrypted stream URL: {m3u8_url[:60]}...")
+                return {
+                    "type": "m3u8",
+                    "url": m3u8_url,
+                    "title": title,
+                    "headers": {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                        "Referer": f"{parsed.scheme or 'https'}://{parsed.netloc}/",
+                        "Origin": f"{parsed.scheme or 'https'}://{parsed.netloc}",
+                    }
+                }
+        except Exception as e:
+            logger.warning(f"Thotplay AES decryption failed: {e}")
+
+    # Fallback: search for direct mp4 / m3u8 links in html
+    m3u8_m = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
+    if m3u8_m:
+        return {
+            "type": "m3u8",
+            "url": m3u8_m[0],
+            "title": title,
+            "headers": {
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Referer": f"{parsed.scheme or 'https'}://{parsed.netloc}/",
+            }
+        }
+
+    return None
+
+
 async def extract_from_video_hosts(url: str) -> dict:
     """
     Tier-0 Router: Checks if URL belongs to any specialized video hosting provider.
@@ -1867,5 +1979,9 @@ async def extract_from_video_hosts(url: str) -> dict:
     if is_abstream_host(netloc):
         logger.info(f"Target recognized as Abstream: {url}")
         return await resolve_abstream(url)
+
+    if is_thotplay_host(netloc):
+        logger.info(f"Target recognized as Thotplay: {url}")
+        return await resolve_thotplay(url)
 
     return None
