@@ -19,6 +19,7 @@ API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SESSION_STRING = os.getenv("SESSION_STRING", "").strip().strip('"\'')
+TELEGRAM_DC_ID = int(os.getenv("TELEGRAM_DC_ID", "5"))
 
 if API_ID:
     try:

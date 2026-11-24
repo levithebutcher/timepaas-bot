@@ -13,7 +13,7 @@ if sys.platform != "win32":
 
 from pyrogram import Client, enums
 from bot.config import (
-    API_ID, API_HASH, BOT_TOKEN, SESSION_STRING,
+    API_ID, API_HASH, BOT_TOKEN, SESSION_STRING, TELEGRAM_DC_ID,
     STREAMTAPE_LOGIN, STREAMTAPE_KEY, ROOT_DIR
 )
 from bot.core.cleaner import clean_temp_directories
@@ -29,6 +29,53 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("TimepassBot")
+
+# Production Telegram DC IP Addresses
+DC_ADDRESSES = {
+    1: "149.154.175.53",
+    2: "149.154.167.51",
+    3: "149.154.175.100",
+    4: "149.154.167.91",
+    5: "91.108.56.165"
+}
+
+
+def patch_pyrogram_initial_dc(app: Client, target_dc: int = 5):
+    """
+    Telegram DC2 currently has an internal server glitch returning [500 RPC_CALL_FAIL]
+    when importing bot authorization for bots hosted on DC5 / DC4.
+    Patches load_session for fresh sessions to initialize directly on the bot's home DC (default DC5).
+    """
+    orig_load_session = app.load_session
+
+    async def custom_load_session():
+        await app.storage.open()
+        session_empty = any(
+            [
+                await app.storage.test_mode() is None,
+                await app.storage.auth_key() is None,
+                await app.storage.user_id() is None,
+                await app.storage.is_bot() is None,
+            ]
+        )
+        if session_empty:
+            dc_ip = DC_ADDRESSES.get(target_dc, "91.108.56.165")
+            logger.info(f"Initializing fresh MTProto session directly on DC{target_dc} ({dc_ip})...")
+            from pyrogram.session.auth import Auth
+            await app.storage.api_id(app.api_id)
+            await app.storage.dc_id(target_dc)
+            await app.storage.server_address(dc_ip)
+            await app.storage.port(443)
+            await app.storage.date(0)
+            await app.storage.test_mode(False)
+            auth_key = await Auth(app, target_dc, dc_ip, 443, False).create()
+            await app.storage.auth_key(auth_key)
+            await app.storage.user_id(None)
+            await app.storage.is_bot(None)
+        else:
+            await orig_load_session()
+
+    app.load_session = custom_load_session
 
 
 def create_bot_client() -> Client:
@@ -62,6 +109,8 @@ def create_bot_client() -> Client:
         client_kwargs["bot_token"] = BOT_TOKEN
 
     app = Client(**client_kwargs)
+    if not SESSION_STRING:
+        patch_pyrogram_initial_dc(app, TELEGRAM_DC_ID)
     return app
 
 
