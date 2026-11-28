@@ -150,10 +150,10 @@ async def _download_via_aria2(
     parsed = urlparse(url)
     referer = clean_headers.get("Referer", f"{parsed.scheme}://{parsed.netloc}/")
 
-    # Use balanced parallel streams: 8 connections stays safely below CDN/Nginx limit_conn limits
-    # and prevents 503 / connection drop while achieving max multi-threaded throughput.
-    server_connections = min(8, max(4, connections // 2 if connections > 8 else connections))
-    split_connections = min(16, max(8, connections))
+    # Optimized parallel chunk streams: up to 16 connections per server and 32 split chunks.
+    # Maximizes multi-stream bandwidth throughput while staying safe from CDN rate-limits.
+    server_connections = min(16, max(4, connections))
+    split_connections = min(32, max(8, connections * 2 if connections <= 16 else connections))
 
     cmd = [
         aria2_bin,
@@ -268,7 +268,7 @@ async def _download_parallel_range_chunks(
     headers: dict = None,
     progress_callback = None,
     cancel_event: asyncio.Event = None,
-    num_workers: int = 6
+    num_workers: int = 8
 ) -> bool:
     """
     Downloads direct media using concurrent byte-range requests with sparse file writes.
@@ -322,7 +322,7 @@ async def _download_parallel_range_chunks(
                     if r.status not in (200, 206):
                         raise RuntimeError(f"Unexpected status {r.status} on byte range {start}-{end}")
                     offset = start
-                    async for chunk in r.content.iter_chunked(256 * 1024):
+                    async for chunk in r.content.iter_chunked(1024 * 1024):
                         if cancel_event and cancel_event.is_set():
                             raise asyncio.CancelledError()
                         with target_path.open("r+b") as out_f:
@@ -433,7 +433,7 @@ async def download_direct_stream(
                 timeout=timeout,
                 headers=req_headers,
                 connector=connector,
-                read_bufsize=1024 * 1024
+                read_bufsize=2 * 1024 * 1024
             ) as session:
                 async with session.get(url) as response:
                     if response.status not in (200, 206):
@@ -510,7 +510,7 @@ async def _download_direct_via_curl_cffi(
         parsed = urlparse(url)
         req_headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
 
-    chunk_size = 1024 * 1024  # 1 MB chunks
+    chunk_size = 2 * 1024 * 1024  # 2 MB chunks
     target_path.parent.mkdir(parents=True, exist_ok=True)
     temp_target = target_path.with_name(f"tmp_{target_path.name}")
 
@@ -681,8 +681,8 @@ async def _download_m3u8_via_curl_cffi(
             local_m3u8 = tmp_dir / "local.m3u8"
             local_m3u8.write_text("\n".join(local_lines), encoding="utf-8")
 
-            # Accelerated parallel chunk downloader (16 concurrent streams)
-            sem = asyncio.Semaphore(16)
+            # Accelerated parallel chunk downloader (24 concurrent streams)
+            sem = asyncio.Semaphore(24)
             downloaded_bytes = 0
 
             async def dl_segment(idx, seg_u, dest):
