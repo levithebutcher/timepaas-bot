@@ -150,10 +150,10 @@ async def _download_via_aria2(
     parsed = urlparse(url)
     referer = clean_headers.get("Referer", f"{parsed.scheme}://{parsed.netloc}/")
 
-    # Optimized parallel chunk streams: up to 16 connections per server and 32 split chunks.
-    # Maximizes multi-stream bandwidth throughput while staying safe from CDN rate-limits.
-    server_connections = min(16, max(4, connections))
-    split_connections = min(32, max(8, connections * 2 if connections <= 16 else connections))
+    # Balanced multi-stream connections: 8 per server and 16 split chunks.
+    # Prevents CDN 403 Forbidden / connection aborts while maximizing throughput.
+    server_connections = min(8, max(4, connections // 2 if connections > 8 else connections))
+    split_connections = min(16, max(8, connections))
 
     cmd = [
         aria2_bin,
@@ -515,10 +515,10 @@ async def _download_direct_via_curl_cffi(
     temp_target = target_path.with_name(f"tmp_{target_path.name}")
 
     try:
-        async with AsyncSession(impersonate="chrome120") as session:
-            async with session.stream("GET", url, headers=req_headers, timeout=60) as resp:
+        async with AsyncSession(impersonate="chrome124") as session:
+            async with session.stream("GET", url, headers=req_headers, timeout=300, allow_redirects=True) as resp:
                 if resp.status_code not in (200, 206):
-                    logger.debug(f"curl_cffi direct stream fetch returned HTTP {resp.status_code}")
+                    logger.warning(f"curl_cffi direct stream fetch returned HTTP {resp.status_code} for {url[:80]}")
                     return False
 
                 total_bytes = 0

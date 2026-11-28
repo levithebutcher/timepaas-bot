@@ -1944,7 +1944,7 @@ async def resolve_xvideotube(url: str, custom_title: str = None) -> dict:
     parsed = urlparse(url)
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
-        "Referer": f"{parsed.scheme or 'https'}://{parsed.netloc}/"
+        "Referer": url
     }
 
     html = await _fetch_stealth_text(url, headers)
@@ -1980,18 +1980,33 @@ async def resolve_xvideotube(url: str, custom_title: str = None) -> dict:
         r"(video_url\w*|video_alt_url\w*)\s*:\s*['\"](https?://[^'\"]+\.(?:mp4|webm|m3u8)[^'\"]*)['\"]",
         html
     )
+    fallback_trailer_candidates = []
     for var_name, vurl in js_vars:
-        if any(ign in var_name or ign in vurl for ign in ("event_reporting", "stats.php", "preview.mp4.jpg")):
+        lowered_name = var_name.lower()
+        lowered_url = vurl.lower()
+        if any(ign in lowered_name or ign in lowered_url for ign in ("event_reporting", "stats.php", ".jpg", ".jpeg", ".png", ".gif")):
             continue
         score = get_stream_resolution_score(vurl)
-        candidates.append((score, vurl))
+        # Avoid picking 30s-1min preview/trailer if full video is available
+        if any(tr in lowered_name or tr in lowered_url for tr in ("trailer", "preview", "teaser", "sample")):
+            fallback_trailer_candidates.append((score, vurl))
+        else:
+            candidates.append((score, vurl))
 
     # 2. HTML5 <source> tags
     source_tags = re.findall(r'<source[^>]+src=[\'"](https?://[^\'"]+)[\'"][^>]*>', html, re.I)
     for s_url in source_tags:
-        if not any(ign in s_url for ign in ("event_reporting", "stats.php", "preview.jpg")):
+        lowered_s = s_url.lower()
+        if not any(ign in lowered_s for ign in ("event_reporting", "stats.php", ".jpg", ".jpeg", ".png", ".gif")):
             score = get_stream_resolution_score(s_url)
-            candidates.append((score, s_url))
+            if any(tr in lowered_s for tr in ("trailer", "preview", "teaser", "sample")):
+                fallback_trailer_candidates.append((score, s_url))
+            else:
+                candidates.append((score, s_url))
+
+    # If only trailer candidates exist, use them as last resort
+    if not candidates and fallback_trailer_candidates:
+        candidates = fallback_trailer_candidates
 
     # Sort candidates by score descending to pick highest available resolution (1080p > 720p > 480p)
     candidates.sort(key=lambda x: x[0], reverse=True)
@@ -2022,7 +2037,7 @@ async def resolve_leakedzone(url: str, custom_title: str = None) -> dict:
     parsed = urlparse(url)
     headers = {
         "User-Agent": DEFAULT_USER_AGENT,
-        "Referer": f"{parsed.scheme or 'https'}://{parsed.netloc}/"
+        "Referer": url
     }
 
     html = await _fetch_stealth_text(url, headers)

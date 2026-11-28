@@ -93,7 +93,7 @@ def create_bot_client() -> Client:
         api_id=API_ID,
         api_hash=API_HASH,
         workers=32,
-        max_concurrent_transmissions=10,
+        max_concurrent_transmissions=5,
         parse_mode=enums.ParseMode.HTML,
         plugins=dict(root="bot/handlers")
     )
