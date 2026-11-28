@@ -369,6 +369,13 @@ async def download_direct_stream(
     url = re.sub(r"[\x00-\x1f\x7f-\x9f\s]", "", str(url).strip())
     clean_headers = sanitize_headers(headers)
 
+    # Build the common request headers once — used by all three fallback tiers below
+    req_headers = {"User-Agent": DEFAULT_USER_AGENT}
+    req_headers.update(clean_headers)
+    if "Referer" not in req_headers:
+        parsed_u = urlparse(url)
+        req_headers["Referer"] = f"{parsed_u.scheme}://{parsed_u.netloc}/"
+
     # 1. Accelerated parallel download via aria2c (configurable N parallel streams)
     if shutil.which("aria2c"):
         try:
@@ -408,13 +415,6 @@ async def download_direct_stream(
         logger.debug(f"Parallel byte-range download fallback failed: {e}")
 
     # 3. Resilient chunked aiohttp downloader
-    req_headers = {"User-Agent": DEFAULT_USER_AGENT}
-    req_headers.update(clean_headers)
-
-    # Determine domain for Referer if not already set
-    if "Referer" not in req_headers:
-        parsed = urlparse(url)
-        req_headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
 
     timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=60)
     chunk_size = 4 * 1024 * 1024  # 4 MB turbo buffer chunk for accelerated I/O write rate
@@ -554,42 +554,41 @@ async def _download_direct_via_curl_cffi(
         return False
 
 
-_FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS = None
-_FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS = None
+_FFMPEG_HLS_FLAGS: dict[str, bool | None] = {
+    "allowed_segment_extensions": None,
+    "allowed_extensions": None,
+}
+
+
+def _ffmpeg_supports_hls_flag(flag: str) -> bool:
+    """Checks whether the installed ffmpeg HLS demuxer supports a specific option flag.
+
+    Results are cached globally after the first probe to avoid re-running ffmpeg
+    on every stream download.
+    """
+    global _FFMPEG_HLS_FLAGS
+    if _FFMPEG_HLS_FLAGS.get(flag) is None:
+        try:
+            import subprocess
+            out = subprocess.check_output(
+                ["ffmpeg", "-h", "demuxer=hls"],
+                stderr=subprocess.STDOUT,
+                timeout=5
+            ).decode("utf-8", errors="ignore")
+            _FFMPEG_HLS_FLAGS[flag] = flag in out
+        except Exception:
+            _FFMPEG_HLS_FLAGS[flag] = False
+    return bool(_FFMPEG_HLS_FLAGS[flag])
 
 
 def _ffmpeg_supports_allowed_segment_extensions() -> bool:
-    """Checks whether the installed ffmpeg supports -allowed_segment_extensions (FFmpeg 7.0+)."""
-    global _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS
-    if _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS is None:
-        try:
-            import subprocess
-            out = subprocess.check_output(
-                ["ffmpeg", "-h", "demuxer=hls"],
-                stderr=subprocess.STDOUT,
-                timeout=5
-            ).decode("utf-8", errors="ignore")
-            _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS = "allowed_segment_extensions" in out
-        except Exception:
-            _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS = False
-    return _FFMPEG_SUPPORTS_ALLOWED_SEGMENT_EXTENSIONS
+    """Returns True if the installed ffmpeg supports -allowed_segment_extensions (FFmpeg 7.0+)."""
+    return _ffmpeg_supports_hls_flag("allowed_segment_extensions")
 
 
 def _ffmpeg_supports_allowed_extensions() -> bool:
-    """Checks whether the installed ffmpeg supports -allowed_extensions."""
-    global _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS
-    if _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS is None:
-        try:
-            import subprocess
-            out = subprocess.check_output(
-                ["ffmpeg", "-h", "demuxer=hls"],
-                stderr=subprocess.STDOUT,
-                timeout=5
-            ).decode("utf-8", errors="ignore")
-            _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS = "allowed_extensions" in out
-        except Exception:
-            _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS = False
-    return _FFMPEG_SUPPORTS_ALLOWED_EXTENSIONS
+    """Returns True if the installed ffmpeg supports -allowed_extensions."""
+    return _ffmpeg_supports_hls_flag("allowed_extensions")
 
 
 async def _download_m3u8_via_curl_cffi(

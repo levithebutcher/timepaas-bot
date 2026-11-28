@@ -35,7 +35,6 @@ except ImportError:
             self.height = height
             self.supports_streaming = supports_streaming
 
-from bot.config import TEMP_DIR
 from bot.core.cleaner import remove_path
 
 logger = logging.getLogger(__name__)
@@ -492,6 +491,7 @@ async def deliver_dumped_album(
         try:
             if len(dumped_items) == 1:
                 item = dumped_items[0]
+                delivered = False
                 for attempt in range(3):
                     try:
                         await client.copy_messages(
@@ -499,11 +499,13 @@ async def deliver_dumped_album(
                             from_chat_id=dump_chat_id,
                             message_ids=item["msg_id"]
                         )
-                        return
+                        delivered = True
+                        break
                     except FloodWait as fw:
-                        logger.warning(f"FloodWait in copy_messages: sleeping {fw.value + 1}s")
+                        logger.warning(f"FloodWait in copy_messages: sleeping {fw.value + 1}s (attempt {attempt + 1}/3)")
                         await asyncio.sleep(fw.value + 1)
-                    except Exception:
+                    except Exception as ce:
+                        logger.warning(f"copy_messages failed ({ce}); trying send_video fallback")
                         try:
                             await client.send_video(
                                 chat_id=target_chat_id,
@@ -514,10 +516,14 @@ async def deliver_dumped_album(
                                 height=item["height"],
                                 supports_streaming=True
                             )
-                            return
+                            delivered = True
                         except FloodWait as fw2:
                             logger.warning(f"FloodWait in send_video fallback: sleeping {fw2.value + 1}s")
                             await asyncio.sleep(fw2.value + 1)
+                        except Exception as ve:
+                            logger.error(f"send_video fallback also failed: {ve}")
+                        break  # Don't retry copy_messages after send_video was attempted
+                return
 
             # Group into media group using Telegram file_ids
             media_group = [
@@ -532,34 +538,46 @@ async def deliver_dumped_album(
                 for item in dumped_items
             ]
 
+            delivered = False
             for attempt in range(3):
                 try:
                     await client.send_media_group(chat_id=target_chat_id, media=media_group)
+                    delivered = True
                     break
                 except FloodWait as fw:
-                    logger.warning(f"FloodWait in deliver_dumped_album send_media_group: sleeping {fw.value + 1}s")
+                    logger.warning(f"FloodWait in deliver_dumped_album send_media_group: sleeping {fw.value + 1}s (attempt {attempt + 1}/3)")
                     await asyncio.sleep(fw.value + 1)
                 except Exception as e:
                     logger.warning(f"send_media_group with file_ids failed ({e}); falling back to copy_messages")
-                    try:
-                        await client.copy_messages(
-                            chat_id=target_chat_id,
-                            from_chat_id=dump_chat_id,
-                            message_ids=dump_msg_ids
-                        )
-                        break
-                    except FloodWait as fw2:
-                        logger.warning(f"FloodWait in copy_messages fallback: sleeping {fw2.value + 1}s")
-                        await asyncio.sleep(fw2.value + 1)
-                    except Exception as copy_err:
-                        logger.error(f"copy_messages failed: {copy_err}")
-                        break
+                    for copy_attempt in range(3):
+                        try:
+                            await client.copy_messages(
+                                chat_id=target_chat_id,
+                                from_chat_id=dump_chat_id,
+                                message_ids=dump_msg_ids
+                            )
+                            delivered = True
+                            break
+                        except FloodWait as fw2:
+                            logger.warning(f"FloodWait in copy_messages fallback: sleeping {fw2.value + 1}s (attempt {copy_attempt + 1}/3)")
+                            await asyncio.sleep(fw2.value + 1)
+                        except Exception as copy_err:
+                            logger.error(f"copy_messages failed: {copy_err}")
+                            break
+                    break  # Either copy_messages succeeded or hard-failed; don't retry send_media_group
+
         finally:
-            # Auto-delete temporary relayed videos from the Dump Channel so it stays 100% clean
+            # Auto-delete temporary relayed videos from the Dump Channel so it stays 100% clean.
+            # Wrapped in a generous timeout so a slow Telegram API response can't hang the pipeline.
             if dump_msg_ids:
                 try:
-                    await client.delete_messages(chat_id=dump_chat_id, message_ids=dump_msg_ids)
+                    await asyncio.wait_for(
+                        client.delete_messages(chat_id=dump_chat_id, message_ids=dump_msg_ids),
+                        timeout=30.0
+                    )
                     logger.info(f"Auto-deleted {len(dump_msg_ids)} temporary messages from Dump Channel {dump_chat_id}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timed out deleting {len(dump_msg_ids)} messages from dump channel — will be cleaned up on next run")
                 except Exception as del_err:
                     logger.debug(f"Failed to auto-delete messages from dump channel: {del_err}")
 

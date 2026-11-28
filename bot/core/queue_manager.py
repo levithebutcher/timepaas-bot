@@ -10,11 +10,16 @@ from pathlib import Path
 try:
     from pyrogram import enums
     from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from pyrogram.errors import FloodWait, MessageNotModified
     HTML_PARSE_MODE = enums.ParseMode.HTML
 except ImportError:
     HTML_PARSE_MODE = None
     InlineKeyboardMarkup = None
     InlineKeyboardButton = None
+    class FloodWait(Exception):
+        value = 0
+    class MessageNotModified(Exception):
+        pass
 from bot.config import (
     MAX_CONCURRENT_TASKS,
     MAX_USER_TASKS,
@@ -510,27 +515,33 @@ class QueueManager:
         batch = self.batches.get(task.batch_id)
 
         # Update individual task status message: Delete upon success so chat stays clean
-        try:
-            if outcome == "Done":
-                if not (batch and batch.is_album):
-                    await client.delete_messages(
+        for attempt in range(3):
+            try:
+                if outcome == "Done":
+                    if not (batch and batch.is_album):
+                        await client.delete_messages(
+                            chat_id=task.chat_id,
+                            message_ids=task.status_msg_id
+                        )
+                elif outcome == "Cancelled":
+                    await client.edit_message_text(
                         chat_id=task.chat_id,
-                        message_ids=task.status_msg_id
+                        message_id=task.status_msg_id,
+                        text=f"<blockquote>🚫 <b>Task Cancelled</b>\n🔗 <code>{task.url}</code></blockquote>"
                     )
-            elif outcome == "Cancelled":
-                await client.edit_message_text(
-                    chat_id=task.chat_id,
-                    message_id=task.status_msg_id,
-                    text=f"<blockquote>🚫 <b>Task Cancelled</b>\n🔗 <code>{task.url}</code></blockquote>"
-                )
-            else:
-                await client.edit_message_text(
-                    chat_id=task.chat_id,
-                    message_id=task.status_msg_id,
-                    text=f"<blockquote>❌ <b>Task Failed</b>\n🔗 <code>{task.url}</code>\n<b>Reason:</b> <code>{task.error_msg}</code></blockquote>"
-                )
-        except Exception as e:
-            logger.debug(f"Could not update final task status for {task.id}: {e}")
+                else:
+                    await client.edit_message_text(
+                        chat_id=task.chat_id,
+                        message_id=task.status_msg_id,
+                        text=f"<blockquote>❌ <b>Task Failed</b>\n🔗 <code>{task.url}</code>\n<b>Reason:</b> <code>{task.error_msg}</code></blockquote>"
+                    )
+                break  # Success
+            except FloodWait as fw:
+                logger.warning(f"FloodWait updating task status ({task.id}): sleeping {fw.value + 1}s")
+                await asyncio.sleep(fw.value + 1)
+            except (MessageNotModified, Exception) as e:
+                logger.debug(f"Could not update final task status for {task.id}: {e}")
+                break
 
         # Batch progress check
         if not batch:
@@ -945,14 +956,18 @@ class QueueManager:
 
             # Finish dashboard message
             if batch.cancel_event.is_set():
-                try:
-                    await client.edit_message_text(
-                        chat_id=batch.chat_id,
-                        message_id=status_msg_id,
-                        text=f"<blockquote>🚫 <b>Album Batch Cancelled</b>\n🆔 <code>{batch.batch_id[:8]}</code></blockquote>"
-                    )
-                except Exception:
-                    pass
+                for attempt in range(3):
+                    try:
+                        await client.edit_message_text(
+                            chat_id=batch.chat_id,
+                            message_id=status_msg_id,
+                            text=f"<blockquote>🚫 <b>Album Batch Cancelled</b>\n🆔 <code>{batch.batch_id[:8]}</code></blockquote>"
+                        )
+                        break
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 1)
+                    except Exception:
+                        break
             else:
                 try:
                     await client.delete_messages(chat_id=batch.chat_id, message_ids=status_msg_id)
@@ -1010,14 +1025,20 @@ class QueueManager:
             messages_to_send.append("\n".join(current_chunk))
 
         for msg_text in messages_to_send:
-            try:
-                send_kwargs = dict(chat_id=batch.chat_id, text=msg_text)
-                if HTML_PARSE_MODE:
-                    send_kwargs["parse_mode"] = HTML_PARSE_MODE
-                await client.send_message(**send_kwargs)
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.error(f"Failed to send batch summary chunk for {batch.batch_id}: {e}")
+            for attempt in range(3):
+                try:
+                    send_kwargs = dict(chat_id=batch.chat_id, text=msg_text)
+                    if HTML_PARSE_MODE:
+                        send_kwargs["parse_mode"] = HTML_PARSE_MODE
+                    await client.send_message(**send_kwargs)
+                    await asyncio.sleep(0.5)
+                    break
+                except FloodWait as fw:
+                    logger.warning(f"FloodWait in batch summary send: sleeping {fw.value + 1}s")
+                    await asyncio.sleep(fw.value + 1)
+                except Exception as e:
+                    logger.error(f"Failed to send batch summary chunk for {batch.batch_id}: {e}")
+                    break
 
         self.batches.pop(batch.batch_id, None)
 
