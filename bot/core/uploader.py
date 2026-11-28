@@ -5,6 +5,14 @@ import uuid
 import asyncio
 import logging
 from pathlib import Path
+
+try:
+    import orjson
+    def fast_json_loads(data):
+        return orjson.loads(data)
+except ImportError:
+    def fast_json_loads(data):
+        return json.loads(data.decode() if isinstance(data, (bytes, bytearray)) else data)
 try:
     from pyrogram.types import InputMediaPhoto, InputMediaVideo
     from pyrogram.errors import FloodWait
@@ -82,7 +90,7 @@ async def get_video_metadata(file_path: Path) -> tuple[int, int, int, bool]:
         )
         stdout, _ = await proc.communicate()
         if proc.returncode == 0:
-            data = json.loads(stdout.decode())
+            data = fast_json_loads(stdout)
             fmt = data.get("format", {})
             raw_dur = fmt.get("duration")
             dur = float(raw_dur) if raw_dur else 0.0

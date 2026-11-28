@@ -5,6 +5,25 @@ import logging
 from urllib.parse import urljoin, urlparse, parse_qs, unquote
 import aiohttp
 from bs4 import BeautifulSoup
+
+try:
+    import orjson
+    def fast_json_loads(data):
+        return orjson.loads(data)
+except ImportError:
+    def fast_json_loads(data):
+        return json.loads(data)
+
+
+def make_soup(markup: str) -> BeautifulSoup:
+    """
+    Parses HTML using high-speed C-based 'lxml' parser for 5x-10x faster execution,
+    with automatic graceful fallback to 'html.parser' if lxml is missing or throws.
+    """
+    try:
+        return BeautifulSoup(markup, "lxml")
+    except Exception:
+        return BeautifulSoup(markup, "html.parser")
 from bot.config import DEFAULT_USER_AGENT
 from bot.extractors.video_hosts import extract_from_video_hosts, unpack_dean_edwards, sanitize_title, get_stream_resolution_score
 
@@ -166,7 +185,7 @@ async def extract_from_general_website(url: str) -> dict:
         if not html:
             return None
 
-        soup = BeautifulSoup(html, "html.parser")
+        soup = make_soup(html)
         default_fn = final_url.split("/")[-1].split("?")[0] or "general_video.mp4"
         if not default_fn.lower().endswith((".mp4", ".mkv", ".webm")):
             default_fn += ".mp4"
@@ -197,7 +216,7 @@ async def extract_from_general_website(url: str) -> dict:
         for script in soup.find_all("script", type="application/ld+json"):
             try:
                 js_content = script.string or script.text or ""
-                data = json.loads(js_content)
+                data = fast_json_loads(js_content)
                 items = data if isinstance(data, list) else [data]
                 for item in items:
                     if not isinstance(item, dict):
@@ -253,7 +272,7 @@ async def extract_from_general_website(url: str) -> dict:
                         async with ifr_session.get(abs_iframe_url, allow_redirects=True) as ifr_resp:
                             if ifr_resp.status == 200:
                                 ifr_html = await ifr_resp.text()
-                                sub_soup = BeautifulSoup(ifr_html, "html.parser")
+                                sub_soup = make_soup(ifr_html)
                                 for sub_v in sub_soup.find_all(["video", "source"]):
                                     v_src = sub_v.get("src") or sub_v.get("data-src")
                                     if v_src and not v_src.startswith("blob:"):
